@@ -8,7 +8,7 @@ Two teams of penguins face off on a snowy battlefield: the **Earth Penguins** de
 
 ---
 
-![Penguin Wars concept art](docs/concept-art.png)
+![Penguin Wars concept art](docs/concept-art.jpg)
 
 ## Lore
 
