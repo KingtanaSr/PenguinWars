@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FUENTE PRINCIPAL DEL JUEGO -->
+<!-- MAIN GAME FONT -->
+<XnaContent xmlns:Graphics="Microsoft.Xna.Framework.Content.Pipeline.Graphics">
+  <Asset Type="Graphics:FontDescription">
+    <!-- Fuente del sistema que se usará -->
+    <!-- System font to be used -->
+    <FontName>Arial</FontName>
+    <Size>24</Size>
+    <Spacing>0</Spacing>
+    <UseKerning>true</UseKerning>
+    <Style>Regular</Style>
+    <CharacterRegions>
+      <!-- Caracteres básicos: letras, números y signos -->
+      <!-- Basic characters: letters, numbers and symbols -->
+      <CharacterRegion>
+        <Start>&#32;</Start>
+        <End>&#126;</End>
+      </CharacterRegion>
+      <!-- Caracteres del español: tildes, ñ, ü, ¿, ¡ -->
+      <!-- Spanish characters: accents, ñ, ü, ¿, ¡ -->
+      <CharacterRegion>
+        <Start>&#160;</Start>
+        <End>&#255;</End>
+      </CharacterRegion>
+    </CharacterRegions>
+  </Asset>
+</XnaContent>

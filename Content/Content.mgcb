@@ -13,3 +13,10 @@
 
 #---------------------------------- Content ---------------------------------#
 
+# Fuente principal / Main font
+#begin Fonts/Main.spritefont
+/importer:FontDescriptionImporter
+/processor:FontDescriptionProcessor
+/processorParam:PremultiplyAlpha=True
+/processorParam:TextureFormat=Compressed
+/build:Fonts/Main.spritefont
