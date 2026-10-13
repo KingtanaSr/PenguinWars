@@ -50,6 +50,22 @@ public class Penguin
     // Body center, used to calculate distances to explosions.
     public Vector2 Center => new Vector2(X, Y - Height / 2f);
 
+    // Caja de colisión del pingüino en coordenadas del mapa.
+    // Penguin collision box in map coordinates.
+    public Rectangle Bounds => new Rectangle(X - Width / 2, Y - Height, Width, Height);
+
+    // Punto desde donde sale el disparo (a la altura del pecho).
+    // Point where the shot comes from (at chest height).
+    public Vector2 GunOrigin => new Vector2(X, Y - Height / 2f - 2f);
+
+    // Hace que el pingüino mire hacia una posición horizontal (por ejemplo, el ratón).
+    // Makes the penguin face a horizontal position (for example, the mouse).
+    public void FaceTowards(float targetX)
+    {
+        if (IsAlive)
+            FacingRight = targetX >= X;
+    }
+
     private Vector2 _velocity;
 
     // Fracciones de píxel acumuladas del movimiento en el aire.

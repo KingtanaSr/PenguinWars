@@ -4,7 +4,7 @@ A turn-based 2D artillery game inspired by **Worms**, built from scratch in **C#
 
 Two teams of penguins face off on a snowy battlefield: the **Earth Penguins** defending their home, and the **Alien Penguins** whose spaceship crash-landed on the ice. The player picks a side, and an AI controls the opposing team.
 
-> **Status:** Work in progress (Phase 4 of 9 completed). This is a personal learning project focused on C#, game architecture, game physics and game AI.
+> **Status:** Work in progress (Phase 5 of 9 completed). This is a personal learning project focused on C#, game architecture, game physics and game AI.
 
 ---
 
@@ -54,8 +54,8 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 | 2 | Game structure: screens, input and menu | ✅ Done |
 | 3 | Destructible terrain | ✅ Done |
 | 4 | Penguins: movement, physics and health | ✅ Done |
-| 5 | Weapons, projectiles, wind and explosions | 🚧 Next |
-| 6 | Turn system, teams and win/surrender conditions | ⏳ Planned |
+| 5 | Weapons, projectiles, wind and explosions | ✅ Done |
+| 6 | Turn system, teams and win/surrender conditions | 🚧 Next |
 | 7 | Items: medkits, ammo crates and weapon sets | ⏳ Planned |
 | 8 | AI-controlled opponent team | ⏳ Planned |
 | 9 | Art, sound, map wreckage and polish | ⏳ Planned |
@@ -87,10 +87,27 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 - Explosion damage and knockback based on distance.
 - Health bars, names and team colors above each penguin.
 
-### 🚧 Phase 5: Weapons (next)
-- Aiming with angle and charged power.
-- Projectiles with parabolic trajectories affected by gravity and wind.
-- First weapons: Bazooka and Plasma Rifle.
+### ✅ Phase 5: Weapons
+- Mouse aiming: the penguin faces the cursor and an aim line shows the shot direction.
+- Charged shots: holding the left button fills the power (shown on the aim dots and HUD); releasing it fires, and reaching full power fires automatically.
+- Projectiles with parabolic trajectories using Euler integration, affected by gravity and wind.
+- Sub-stepping (pixel-by-pixel movement) to prevent fast projectiles from tunneling through terrain.
+- Random wind that changes after every shot, with an on-screen indicator.
+- Explosions that carve the terrain, damage and knock back penguins, with a fading flash effect.
+- Data-driven weapons: each weapon only defines values (speed, gravity, wind, radius, damage), so new weapons need no new logic.
+- First weapons: **Bazooka** (Earth team) and **Plasma Rifle** (Alien team).
+- One projectile at a time: movement and actions are locked while a shot is in flight.
+
+| Weapon | Speed | Gravity | Wind | Explosion radius | Max damage |
+|---|---|---|---|---|---|
+| Bazooka | 750 | 100% | 100% | 40 px | 45 |
+| Plasma Rifle | 900 | 60% | 30% | 30 px | 35 |
+
+### 🚧 Phase 6: Turn system (next)
+- Turns alternating between teams, rotating through each team's members.
+- Ending a turn by firing or passing, with a turn timer.
+- Wind changing every turn.
+- Win condition when a team is eliminated, surrender option and game over screen.
 
 ## Game AI (planned)
 
@@ -112,18 +129,24 @@ The opposing team will be controlled by an AI that:
 The game is built around MonoGame's **game loop** (`Update` for logic, `Draw` for rendering, about 60 times per second):
 
 - **`ScreenManager`:** switches between screens (menu, gameplay, game over) using a state pattern. Each screen inherits from an abstract `Screen` class.
-- **`InputManager`:** stores the keyboard and mouse state of the current and previous frames, allowing the game to distinguish between a key being *held* and a key being *just pressed*.
+- **`InputManager`:** stores the keyboard and mouse state of the current and previous frames, allowing the game to distinguish between a key being *held*, *just pressed* and *just released*.
 - **`Terrain`:** pixel mask for collisions and destruction, rendered as a texture that is only re-uploaded when it changes.
 - **`Penguin`:** encapsulates movement, physics, health and rendering of each character. Health and position can only be modified through its own methods.
+- **`Weapon`:** immutable weapon definitions (data only), separated from the behavior of `Projectile`.
+- **`Projectile`:** simulates the flight of a shot and detects hits against the terrain and penguins.
+- **`Explosion`:** short-lived visual effect that removes itself when finished.
+- **`Wind`:** random horizontal acceleration applied to projectiles.
 - **Content Pipeline:** fonts, sprites and sounds are processed at build time through `Content.mgcb`.
 
 ```
 PenguinWars/
 ├── Content/        # Game assets (fonts, sprites, sounds)
+├── Combat/         # Weapons, projectiles and explosions
 ├── Core/           # Engine-level classes (screens, input, teams)
 ├── Entities/       # Game characters (penguins and their profiles)
 ├── Screens/        # Game screens (menu, gameplay)
-├── World/          # Destructible terrain
+├── World/          # Destructible terrain and wind
+├── docs/           # Concept art and documentation images
 ├── Game1.cs        # Main game class and game loop
 └── Program.cs      # Entry point
 ```
@@ -146,19 +169,22 @@ dotnet run
 
 ## Controls (current)
 
-| Key | Action |
+| Input | Action |
 |---|---|
 | ↑ / ↓ | Navigate menu |
-| Enter | Select option (menu) / Jump (gameplay) |
-| ← / → | Walk |
+| Enter | Select option (menu) |
+| A / D | Walk left / right |
+| Space | Jump |
+| Mouse | Aim |
+| Hold left click | Charge shot power |
+| Release left click | Fire |
 | Esc | Return to menu |
 
-**Temporary test controls** (will be replaced by the turn and weapon systems):
+**Temporary test controls** (will be replaced by the turn system):
 
 | Key | Action |
 |---|---|
 | Tab | Switch to the next penguin |
-| Left click | Test explosion at the mouse position |
 | R | Generate a new map |
 
 ## Author

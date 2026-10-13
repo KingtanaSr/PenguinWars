@@ -33,9 +33,24 @@ public static class InputManager
     public static bool WasKeyPressed(Keys key) =>
         _currentKeys.IsKeyDown(key) && _previousKeys.IsKeyUp(key);
 
+    // Posición actual del ratón en la pantalla.
+    // Current mouse position on screen.
     public static Point MousePosition => _currentMouse.Position;
 
+    // Verdadero solo en el frame en que se hizo clic izquierdo.
+    // True only in the frame where the left button was clicked.
     public static bool WasLeftClicked =>
         _currentMouse.LeftButton == ButtonState.Pressed &&
         _previousMouse.LeftButton == ButtonState.Released;
+
+    // Verdadero mientras el botón izquierdo siga presionado (para cargar la potencia).
+    // True while the left button remains pressed (for charging power).
+    public static bool IsLeftButtonDown =>
+        _currentMouse.LeftButton == ButtonState.Pressed;
+
+    // Verdadero solo en el frame en que se soltó el botón izquierdo.
+    // True only in the frame where the left button was released.
+    public static bool WasLeftReleased =>
+        _currentMouse.LeftButton == ButtonState.Released &&
+        _previousMouse.LeftButton == ButtonState.Pressed;
 }

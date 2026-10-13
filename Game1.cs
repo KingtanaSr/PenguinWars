@@ -26,6 +26,10 @@ public class Game1 : Game
     // 1x1 texture used to draw rectangles.
     public Texture2D Pixel { get; private set; }
 
+    // Textura de un círculo blanco, para proyectiles y explosiones.
+    // White circle texture, for projectiles and explosions.
+    public Texture2D Circle { get; private set; }
+
     public SpriteFont Font { get; private set; }
 
     public Game1()
@@ -54,6 +58,7 @@ public class Game1 : Game
 
         Pixel = new Texture2D(GraphicsDevice, 1, 1);
         Pixel.SetData(new[] { Color.White });
+        Circle = CreateCircleTexture(64);
 
         Font = Content.Load<SpriteFont>("Fonts/Main");
 
@@ -84,5 +89,31 @@ public class Game1 : Game
         _spriteBatch.End();
 
         base.Draw(gameTime);
+    }
+
+        // Crea por código una textura con un círculo blanco sobre fondo transparente.
+    // Creates by code a texture with a white circle on a transparent background.
+    private Texture2D CreateCircleTexture(int diameter)
+    {
+        var texture = new Texture2D(GraphicsDevice, diameter, diameter);
+        var data = new Color[diameter * diameter];
+        float radius = diameter / 2f;
+
+        for (int y = 0; y < diameter; y++)
+        {
+            for (int x = 0; x < diameter; x++)
+            {
+                // Distancia del centro del píxel al centro del círculo.
+                // Distance from the pixel center to the circle center.
+                float dx = x + 0.5f - radius;
+                float dy = y + 0.5f - radius;
+                data[y * diameter + x] = dx * dx + dy * dy <= radius * radius
+                    ? Color.White
+                    : Color.Transparent;
+            }
+        }
+
+        texture.SetData(data);
+        return texture;
     }
 }
