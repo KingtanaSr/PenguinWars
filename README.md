@@ -4,9 +4,7 @@ A turn-based 2D artillery game inspired by **Worms**, built from scratch in **C#
 
 Two teams of penguins face off on a snowy battlefield: the **Earth Penguins** defending their home, and the **Alien Penguins** whose spaceship crash-landed on the ice. The player picks a side, and an AI controls the opposing team.
 
-> **Status:** Work in progress (Phase 7 of 9 completed). This is a personal learning project focused on C#, game architecture, game physics and game AI.
->
-> **Note:** until the AI is implemented (Phase 8), the opposing team is also controlled by the player (local hot seat).
+> **Status:** Work in progress (Phase 8 of 9 completed, Phase 8.5 next). This is a personal learning project focused on C#, game architecture, game physics and game AI.
 
 ---
 
@@ -50,6 +48,7 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 
 ## Gameplay
 
+- **Single player against the AI:** choose your team and the AI difficulty in the main menu.
 - **Turn-based:** on each turn, one member of the active team can move and act, with a **45-second** time limit.
 - A turn ends when the active penguin **fires a weapon, uses a medkit, passes or runs out of time**.
 - Each team **rotates through its living members** every turn, and the starting team is chosen at random.
@@ -57,7 +56,7 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 - **Projectile physics:** shots are affected by angle, power, gravity and wind, which **changes every turn**.
 - **Health bars** for every penguin, plus fall damage and drowning in icy water.
 - **Items** spawn on the map, can be picked up by touching them, and sometimes fall from the sky as **supply drops**.
-- The match ends when **all members of a team are eliminated** or a team **surrenders**. If both teams are eliminated at the same time, it is a **draw**.
+- The match ends when **all members of a team are eliminated** or the player **surrenders**. If both teams are eliminated at the same time, it is a **draw**.
 
 ## Development Progress
 
@@ -70,7 +69,8 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 | 5 | Weapons, projectiles, wind and explosions | ✅ Done |
 | 6 | Turn system, teams and win/surrender conditions | ✅ Done |
 | 7 | Items: medkits, ammo crates and weapon sets | ✅ Done |
-| 8 | AI-controlled opponent team | 🚧 Next |
+| 8 | Classic AI opponent (shot simulation) | ✅ Done |
+| 8.5 | LLM strategist layer with a local model (Ollama) | 🚧 Next |
 | 9 | Art, sound, map wreckage and polish | ⏳ Planned |
 
 ### ✅ Phase 1: Project setup
@@ -116,7 +116,6 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 - Random starting team and new wind every turn.
 - 45-second turn timer, shown in red during the last 10 seconds.
 - Turn ends on firing, passing, timeout or the active penguin's death.
-- Turn start banner showing the active penguin, its team and whether it is the player's team.
 - Pause menu with **Resume**, **Surrender** and **Exit to menu**.
 - Game over screen with **Victory**, **Defeat** or **Draw**, the reason for the ending and a **Rematch** option.
 
@@ -127,16 +126,31 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 - Gravity Grenade with negative knockback that pulls penguins towards the explosion.
 - Instant straight-shot weapons (Shotgun and Ray Gun) with no gravity and no charging.
 - Per-team inventory (`TeamInventory`) with limited ammo, weapon selection and medkits.
-- Weapon bar showing the active team's weapons, ammo and selected weapon.
 - Medkits and ammo crates placed on the map, picked up on touch, affected by gravity and destroyed by explosions.
 - Random supply drops from the sky at the start of some turns.
 - Floating texts to confirm pickups and healing.
 
-### 🚧 Phase 8: AI opponent (next)
-- AI that controls the opposing team on its turns.
-- Shot simulation: tests candidate angles and power levels, accounting for wind, and picks the best one.
-- Target and weapon selection based on distance and remaining health.
-- Difficulty levels through controlled randomness in its aim.
+### ✅ Phase 8: Classic AI opponent
+- The team not chosen by the player is fully controlled by the AI.
+- **Simulation-based shot planning:** the AI reuses the game's own `Projectile` class to simulate around 2,000 candidate shots (every weapon with ammo, angles every 4° to both sides and 11 power levels) with the real physics, including wind, bounces and terrain collisions.
+- **Scoring function:** expected damage to enemies, a bonus for kills, heavy penalties for friendly fire and self-damage, and a small penalty for distance to the closest enemy.
+- **Frame-budgeted search:** the planner is a C# iterator (`yield return`) that runs 40 simulations per frame, so the game never freezes while the AI is "thinking".
+- **Decision making:** fires the best shot, heals with a medkit when health is low and no kill is possible, or passes when there are no options.
+- **Human-like execution:** the AI rotates its aim gradually and charges power like a player would.
+- **Difficulty levels** (Easy, Normal, Hard) that add random angle and power error, selectable in the main menu.
+
+### 🚧 Phase 8.5: LLM strategist (next)
+- Hybrid AI: a local language model (Ollama) acts as the **strategic "brain"**, choosing between options already computed and validated by the game (target, weapon, heal or reposition).
+- The classic AI remains the **"hands"**, executing the chosen plan with precise simulation.
+- In-character dialogue for the AI penguins.
+- Asynchronous requests with a timeout and automatic fallback to the classic AI, behind a C# interface so providers can be swapped.
+
+## Game AI
+
+The opposing team is controlled by a **two-layer AI design**:
+
+1. **Classic layer (implemented):** a deterministic planner that simulates candidate shots with the real game physics and picks the one with the best score. It is precise, fast and free, and it always works as a fallback.
+2. **LLM layer (Phase 8.5):** a small local language model that receives a text summary of the match and makes high-level strategic choices among valid options, plus in-character dialogue. This follows the same pattern used in modern AI agents: **an LLM plans, deterministic tools execute**.
 
 ## Tech Stack
 
@@ -154,17 +168,20 @@ The game is built around MonoGame's **game loop** (`Update` for logic, `Draw` fo
 - **`InputManager`:** stores the keyboard and mouse state of the current and previous frames, allowing the game to distinguish between a key being *held*, *just pressed* and *just released*, and to read the mouse wheel.
 - **`TurnManager`:** finite state machine that decides whose turn it is, tracks the turn timer and detects when a turn is over.
 - **`TeamInventory`:** each team's ammo, selected weapon and medkits.
+- **`AiController`:** finite state machine for the AI's turn (**Thinking**, **Aiming**, **Charging**, **Done**) that returns actions for the match to execute.
+- **`ShotPlanner`:** frame-budgeted search that simulates and scores candidate shots.
 - **`Terrain`:** pixel mask for collisions and destruction, rendered as a texture that is only re-uploaded when it changes.
 - **`Penguin`:** encapsulates movement, physics, health and rendering of each character. Health and position can only be modified through its own methods.
 - **`Item`:** medkits and ammo crates with simple gravity, picked up on contact.
 - **`Weapon`:** immutable weapon definitions (data only), separated from the behavior of `Projectile`.
-- **`Projectile`:** simulates the flight of a shot, bounces for timed weapons and detects hits against the terrain and penguins.
+- **`Projectile`:** simulates the flight of a shot, bounces for timed weapons and detects hits. The same class is used for real shots and for the AI's simulations.
 - **`Explosion`** and **`FloatingText`:** short-lived visual effects that remove themselves when finished.
 - **`Wind`:** random horizontal acceleration applied to projectiles.
 - **Content Pipeline:** fonts, sprites and sounds are processed at build time through `Content.mgcb`.
 
 ```
 PenguinWars/
+├── AI/             # AI controller, shot planner and difficulty levels
 ├── Content/        # Game assets (fonts, sprites, sounds)
 ├── Combat/         # Weapons, projectiles and explosions
 ├── Core/           # Engine-level classes (screens, input, teams, floating texts)
@@ -198,6 +215,7 @@ dotnet run
 | Input | Action |
 |---|---|
 | ↑ / ↓ | Navigate menus |
+| ← / → | Change AI difficulty (main menu) |
 | Enter | Select option |
 | A / D | Walk left / right |
 | Space | Jump |

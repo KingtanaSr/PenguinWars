@@ -61,6 +61,9 @@ public class Game1 : Game
         Circle = CreateCircleTexture(64);
 
         Font = Content.Load<SpriteFont>("Fonts/Main");
+        // Si un texto trae un carácter que la fuente no tiene, se dibuja "?" en lugar de fallar.
+        // If a text contains a character the font does not have, "?" is drawn instead of crashing.
+        Font.DefaultCharacter = '?';
 
         Screens.ChangeScreen(new MenuScreen(this));
     }

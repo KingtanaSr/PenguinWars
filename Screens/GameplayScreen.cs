@@ -7,6 +7,7 @@ using System.Linq;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
+using PenguinWars.AI;
 using PenguinWars.Combat;
 using PenguinWars.Core;
 using PenguinWars.Entities;
@@ -44,13 +45,19 @@ public class GameplayScreen : Screen
     private const int StartingCrates = 2;
     private const double SupplyDropChance = 0.35;
 
+    // Duración del globo de diálogo de la IA.
+    // Duration of the AI's speech bubble.
+    private const float SpeechDuration = 3.5f;
+
     // Opciones del menú de pausa.
     // Pause menu options.
     private readonly string[] _pauseOptions = { "Continuar", "Rendirse", "Salir al menú" };
 
-    // Equipo que controla el jugador; la IA controlará el otro en la Fase 8.
-    // Team controlled by the player; the AI will control the other one in Phase 8.
+    // Equipo del jugador, equipo de la IA y dificultad.
+    // Player team, AI team and difficulty.
     private readonly Team _playerTeam;
+    private readonly Team _aiTeam;
+    private readonly AiDifficulty _difficulty;
 
     private readonly Random _random = new();
     private readonly List<Penguin> _penguins = new();
@@ -58,16 +65,27 @@ public class GameplayScreen : Screen
     private readonly List<Explosion> _explosions = new();
     private readonly List<FloatingText> _floatingTexts = new();
     private readonly Wind _wind = new();
+    private readonly AiController _ai;
     private Dictionary<Team, TeamInventory> _inventories;
     private Terrain _terrain;
     private TurnManager _turns;
+
+    // Número del turno en que la IA empezó a planear (para hacerlo una sola vez por turno).
+    // Turn number in which the AI started planning (to do it only once per turn).
+    private int _aiTurnNumber = -1;
+
+    // Frase actual del globo, el pingüino que la dice y el tiempo restante.
+    // Current bubble line, the penguin saying it and the remaining time.
+    private string _speechText;
+    private Penguin _speechPenguin;
+    private float _speechTimer;
 
     // Proyectil en juego (solo puede haber uno a la vez).
     // Projectile in play (there can only be one at a time).
     private Projectile _projectile;
 
-    // Estado de la carga del disparo.
-    // Shot charging state.
+    // Estado de la carga del disparo (del jugador o de la IA).
+    // Shot charging state (of the player or the AI).
     private bool _isCharging;
     private float _power;
 
@@ -76,14 +94,25 @@ public class GameplayScreen : Screen
     private bool _isPaused;
     private int _pauseSelected;
 
-    public GameplayScreen(Game1 game, Team playerTeam) : base(game)
+    public GameplayScreen(Game1 game, Team playerTeam, AiDifficulty difficulty) : base(game)
     {
         _playerTeam = playerTeam;
+        _aiTeam = playerTeam.Opponent();
+        _difficulty = difficulty;
+
+        // Con el estratega LLM activado, la IA consulta a Ollama antes de planear.
+        // With the LLM strategist enabled, the AI asks Ollama before planning.
+        IStrategyAdvisor advisor = GameSettings.UseLlmStrategist ? new OllamaStrategyAdvisor() : null;
+        _ai = new AiController(difficulty, _random, advisor);
     }
 
     public override void LoadContent()
     {
         StartNewMatch();
+
+        // Precargar el modelo del LLM mientras empieza la partida.
+        // Preload the LLM model while the match starts.
+        _ai.WarmUp();
     }
 
     // Crea el mapa, coloca equipos y objetos, y empieza el primer turno.
@@ -100,6 +129,10 @@ public class GameplayScreen : Screen
         _projectile = null;
         _isCharging = false;
         _power = 0f;
+        _aiTurnNumber = -1;
+        _speechText = null;
+        _speechPenguin = null;
+        _speechTimer = 0f;
         _wind.Randomize(_random);
 
         // Un inventario por equipo.
@@ -193,8 +226,6 @@ public class GameplayScreen : Screen
         {
             _isPaused = !_isPaused;
             _pauseSelected = 0;
-            _isCharging = false;
-            _power = 0f;
             return;
         }
 
@@ -208,42 +239,16 @@ public class GameplayScreen : Screen
 
         Penguin current = _turns.CurrentPenguin;
         TeamInventory inventory = _inventories[current.Team];
-        bool isPlaying = _turns.Phase == TurnPhase.Playing && _projectile == null;
 
-        // Elegir arma, usar botiquín o pasar turno (solo sin estar cargando un disparo).
-        // Choose weapon, use medkit or pass the turn (only while not charging a shot).
-        if (CanAct(current) && !_isCharging)
-        {
-            HandleWeaponSelection(inventory);
-
-            if (InputManager.WasKeyPressed(Keys.H))
-                TryUseMedkit(current, inventory);
-        }
-
-        if (isPlaying && !_isCharging && InputManager.WasKeyPressed(Keys.P))
-            _turns.EndAction();
-
-        // Recalcular: usar un botiquín o pasar turno termina la acción.
-        // Recalculate: using a medkit or passing the turn ends the action.
-        bool canAct = CanAct(current);
-
-        // Movimiento con A y D, salto con Espacio; solo en la fase de juego y sin cargar.
-        // Movement with A and D, jump with Space; only in the playing phase and while not charging.
+        // En el turno de la IA, el jugador no controla nada.
+        // During the AI's turn, the player does not control anything.
         int moveDirection = 0;
         bool jumpRequested = false;
-        if (_turns.Phase == TurnPhase.Playing && _projectile == null && !_isCharging)
-        {
-            if (InputManager.IsKeyDown(Keys.A)) moveDirection -= 1;
-            if (InputManager.IsKeyDown(Keys.D)) moveDirection += 1;
-            jumpRequested = InputManager.WasKeyPressed(Keys.Space);
-        }
 
-        // Si no camina, el pingüino mira hacia el ratón para apuntar.
-        // If it is not walking, the penguin faces the mouse to aim.
-        if (moveDirection == 0 && canAct)
-            current.FaceTowards(InputManager.MousePosition.X);
-
-        HandleAimAndFire(dt, current, inventory, canAct);
+        if (current.Team == _aiTeam)
+            UpdateAiTurn(dt, current, inventory);
+        else
+            HandlePlayerInput(dt, current, inventory, out moveDirection, out jumpRequested);
 
         // Actualizar a todos los pingüinos; solo el del turno recibe la entrada.
         // Update all penguins; only the one whose turn it is receives input.
@@ -271,6 +276,10 @@ public class GameplayScreen : Screen
             text.Update(dt);
         _floatingTexts.RemoveAll(t => t.IsFinished);
 
+        // Descontar el tiempo del globo de diálogo.
+        // Count down the speech bubble time.
+        _speechTimer = Math.Max(0f, _speechTimer - dt);
+
         _terrain.ApplyChanges();
 
         // Avanzar el turno y, si terminó, pasar al siguiente o terminar la partida.
@@ -278,6 +287,109 @@ public class GameplayScreen : Screen
         _turns.Update(dt, IsWorldSettled());
         if (_turns.IsTurnOver)
             EndTurn();
+    }
+
+    // Entrada del jugador durante su turno: arma, botiquín, pasar, moverse, apuntar y disparar.
+    // Player input during their turn: weapon, medkit, pass, move, aim and fire.
+    private void HandlePlayerInput(float dt, Penguin current, TeamInventory inventory,
+        out int moveDirection, out bool jumpRequested)
+    {
+        moveDirection = 0;
+        jumpRequested = false;
+        bool isPlaying = _turns.Phase == TurnPhase.Playing && _projectile == null;
+
+        // Elegir arma o usar botiquín (solo sin estar cargando un disparo).
+        // Choose weapon or use medkit (only while not charging a shot).
+        if (CanAct(current) && !_isCharging)
+        {
+            HandleWeaponSelection(inventory);
+
+            if (InputManager.WasKeyPressed(Keys.H))
+                TryUseMedkit(current, inventory);
+        }
+
+        // P pasa el turno sin disparar.
+        // P passes the turn without firing.
+        if (isPlaying && !_isCharging && InputManager.WasKeyPressed(Keys.P))
+            PassTurn(current);
+
+        // Recalcular: usar un botiquín o pasar turno termina la acción.
+        // Recalculate: using a medkit or passing the turn ends the action.
+        bool canAct = CanAct(current);
+
+        // Movimiento con A y D, salto con Espacio; solo en la fase de juego y sin cargar.
+        // Movement with A and D, jump with Space; only in the playing phase and while not charging.
+        if (_turns.Phase == TurnPhase.Playing && _projectile == null && !_isCharging)
+        {
+            if (InputManager.IsKeyDown(Keys.A)) moveDirection -= 1;
+            if (InputManager.IsKeyDown(Keys.D)) moveDirection += 1;
+            jumpRequested = InputManager.WasKeyPressed(Keys.Space);
+        }
+
+        // Si no camina, el pingüino mira hacia el ratón para apuntar.
+        // If it is not walking, the penguin faces the mouse to aim.
+        if (moveDirection == 0 && canAct)
+            current.FaceTowards(InputManager.MousePosition.X);
+
+        HandleAimAndFire(dt, current, inventory, canAct);
+    }
+
+    // Turno de la IA: consultar/planear una vez y luego ejecutar las acciones que pida.
+    // AI turn: consult/plan once and then execute the actions it requests.
+    private void UpdateAiTurn(float dt, Penguin current, TeamInventory inventory)
+    {
+        if (!CanAct(current))
+        {
+            _isCharging = false;
+            _power = 0f;
+            return;
+        }
+
+        // Empezar una sola vez por turno.
+        // Start only once per turn.
+        if (_aiTurnNumber != _turns.TurnNumber)
+        {
+            _aiTurnNumber = _turns.TurnNumber;
+            _ai.BeginTurn(current, inventory, _terrain, _penguins, _wind.Acceleration, _wind.Strength,
+                MuzzleDistance, MedkitHealAmount);
+        }
+
+        AiAction action = _ai.Update(dt);
+
+        // Mostrar la frase del estratega en un globo sobre el pingüino.
+        // Show the strategist's line in a bubble above the penguin.
+        if (_ai.TryTakeTaunt(out string taunt))
+        {
+            _speechText = taunt;
+            _speechPenguin = current;
+            _speechTimer = SpeechDuration;
+        }
+
+        // Mostrar el arma elegida, la orientación y la carga de la IA.
+        // Show the AI's chosen weapon, facing and charge.
+        if (_ai.HasPlan)
+            inventory.Select(_ai.SelectedWeaponIndex);
+        current.FaceTowards(current.X + _ai.AimDirection.X * 100f);
+        _isCharging = _ai.IsCharging;
+        _power = _ai.Power;
+
+        switch (action)
+        {
+            case AiAction.Fire:
+                Fire(current, inventory, _ai.AimDirection);
+                break;
+
+            case AiAction.UseMedkit:
+                // Si no pudo curarse, pasa el turno.
+                // If it could not heal, it passes the turn.
+                if (!TryUseMedkit(current, inventory))
+                    PassTurn(current);
+                break;
+
+            case AiAction.Pass:
+                PassTurn(current);
+                break;
+        }
     }
 
     // Solo se puede actuar en la fase de juego, en el suelo y sin proyectiles en juego.
@@ -310,16 +422,25 @@ public class GameplayScreen : Screen
             inventory.SelectNext(1);
     }
 
-    // Usar un botiquín cura al pingüino del turno y termina el turno.
-    // Using a medkit heals the current penguin and ends the turn.
-    private void TryUseMedkit(Penguin current, TeamInventory inventory)
+    // Usar un botiquín cura al pingüino del turno y termina el turno. Devuelve si se usó.
+    // Using a medkit heals the current penguin and ends the turn. Returns whether it was used.
+    private bool TryUseMedkit(Penguin current, TeamInventory inventory)
     {
         if (inventory.Medkits <= 0 || current.Health >= Penguin.MaxHealth)
-            return;
+            return false;
 
         inventory.UseMedkit();
         current.Heal(MedkitHealAmount);
         AddFloatingText($"+{MedkitHealAmount} HP", current.Center - new Vector2(0f, 45f), Color.LimeGreen);
+        _turns.EndAction();
+        return true;
+    }
+
+    // Pasa el turno sin actuar.
+    // Passes the turn without acting.
+    private void PassTurn(Penguin current)
+    {
+        AddFloatingText("Pasa el turno", current.Center - new Vector2(0f, 45f), Color.LightGray);
         _turns.EndAction();
     }
 
@@ -385,7 +506,7 @@ public class GameplayScreen : Screen
     private void GoToGameOver(Team? winner, string reason)
     {
         _terrain.Dispose();
-        Game.Screens.ChangeScreen(new GameOverScreen(Game, _playerTeam, winner, reason));
+        Game.Screens.ChangeScreen(new GameOverScreen(Game, _playerTeam, _difficulty, winner, reason));
     }
 
     // Navegación del menú de pausa.
@@ -409,9 +530,9 @@ public class GameplayScreen : Screen
                 break;
 
             case 1:
-                // Rendirse: gana el equipo contrario al del jugador.
-                // Surrender: the team opposing the player wins.
-                GoToGameOver(_playerTeam.Opponent(), $"Los {PenguinProfiles.GetTeamName(_playerTeam)} se rindieron");
+                // Rendirse: gana el equipo de la IA.
+                // Surrender: the AI team wins.
+                GoToGameOver(_aiTeam, $"Los {PenguinProfiles.GetTeamName(_playerTeam)} se rindieron");
                 break;
 
             case 2:
@@ -439,7 +560,7 @@ public class GameplayScreen : Screen
         if (!weapon.UsesCharge)
         {
             if (InputManager.WasLeftClicked)
-                Fire(current, inventory);
+                Fire(current, inventory, GetMouseAimDirection(current));
             return;
         }
 
@@ -459,22 +580,21 @@ public class GameplayScreen : Screen
             // Al llegar al máximo dispara solo.
             // When it reaches the maximum, it fires automatically.
             if (_power >= 1f)
-                Fire(current, inventory);
+                Fire(current, inventory, GetMouseAimDirection(current));
         }
         else
         {
             // Se soltó el botón: disparar con la potencia acumulada.
             // The button was released: fire with the accumulated power.
-            Fire(current, inventory);
+            Fire(current, inventory, GetMouseAimDirection(current));
         }
     }
 
-    // Crea el proyectil del arma seleccionada, gasta munición y termina la acción del turno.
-    // Creates the selected weapon's projectile, spends ammo and ends the turn's action.
-    private void Fire(Penguin shooter, TeamInventory inventory)
+    // Crea el proyectil del arma seleccionada en la dirección dada, gasta munición y termina la acción.
+    // Creates the selected weapon's projectile in the given direction, spends ammo and ends the action.
+    private void Fire(Penguin shooter, TeamInventory inventory, Vector2 direction)
     {
         Weapon weapon = inventory.SelectedWeapon;
-        Vector2 direction = GetAimDirection(shooter);
         Vector2 spawnPosition = shooter.GunOrigin + direction * MuzzleDistance;
 
         // Las armas sin carga siempre disparan a potencia máxima.
@@ -494,7 +614,7 @@ public class GameplayScreen : Screen
 
     // Dirección normalizada desde el pecho del pingüino hacia el ratón.
     // Normalized direction from the penguin's chest towards the mouse.
-    private static Vector2 GetAimDirection(Penguin penguin)
+    private static Vector2 GetMouseAimDirection(Penguin penguin)
     {
         Vector2 direction = InputManager.MousePosition.ToVector2() - penguin.GunOrigin;
 
@@ -506,6 +626,11 @@ public class GameplayScreen : Screen
         direction.Normalize();
         return direction;
     }
+
+    // Dirección de la mira que se dibuja: la de la IA en su turno, la del ratón en el del jugador.
+    // Aim direction to draw: the AI's during its turn, the mouse's during the player's.
+    private Vector2 GetDisplayedAimDirection(Penguin penguin) =>
+        penguin.Team == _aiTeam ? _ai.AimDirection : GetMouseAimDirection(penguin);
 
     // Mueve el proyectil y, si explota, aplica la explosión.
     // Moves the projectile and, if it explodes, applies the explosion.
@@ -554,6 +679,7 @@ public class GameplayScreen : Screen
             item.Draw(sb, Game.Pixel);
 
         Penguin current = _turns.CurrentPenguin;
+        bool isAiTurn = current.Team == _aiTeam;
 
         // La flecha dorada marca al pingüino del turno.
         // The golden arrow marks the penguin whose turn it is.
@@ -568,10 +694,26 @@ public class GameplayScreen : Screen
         foreach (FloatingText text in _floatingTexts)
             text.Draw(sb, Game.Font);
 
-        if (CanAct(current))
-            DrawAim(sb, current);
+        // La IA está ocupada mientras consulta al estratega o piensa.
+        // The AI is busy while consulting the strategist or thinking.
+        bool isAiBusy = isAiTurn && (_ai.IsWaitingForAdvisor || _ai.IsThinking);
 
-        DrawHud(sb, current);
+        // La mira se muestra cuando se puede actuar, salvo mientras la IA está ocupada.
+        // The aim is shown when actions are allowed, except while the AI is busy.
+        if (CanAct(current) && !isAiBusy)
+            DrawAim(sb, current, isAiTurn);
+
+        // Aviso de lo que está haciendo la IA.
+        // Notice of what the AI is doing.
+        if (CanAct(current) && isAiBusy)
+        {
+            string status = _ai.IsWaitingForAdvisor ? "Consultando estrategia..." : "Pensando...";
+            DrawTextAt(sb, status, current.Center - new Vector2(0f, 62f), Color.White, 0.5f);
+        }
+
+        DrawSpeechBubble(sb);
+
+        DrawHud(sb, current, isAiTurn);
         DrawTimer(sb);
         DrawWeaponBar(sb, current);
         _wind.Draw(sb, Game.Pixel, Game.Font, Game1.ScreenWidth);
@@ -585,9 +727,9 @@ public class GameplayScreen : Screen
 
     // Mira: puntos en la dirección del disparo que se llenan con la potencia, y una cruz en el ratón.
     // Aim: dots in the shot direction that fill up with power, and a cross at the mouse.
-    private void DrawAim(SpriteBatch sb, Penguin penguin)
+    private void DrawAim(SpriteBatch sb, Penguin penguin, bool isAiTurn)
     {
-        Vector2 direction = GetAimDirection(penguin);
+        Vector2 direction = GetDisplayedAimDirection(penguin);
 
         for (int i = 0; i < AimDotCount; i++)
         {
@@ -603,23 +745,37 @@ public class GameplayScreen : Screen
             DrawRect(sb, new Rectangle((int)position.X - 1, (int)position.Y - 1, 3, 3), color);
         }
 
-        // Cruz en la posición del ratón.
-        // Cross at the mouse position.
-        Point mouse = InputManager.MousePosition;
-        DrawRect(sb, new Rectangle(mouse.X - 6, mouse.Y, 13, 1), Color.White);
-        DrawRect(sb, new Rectangle(mouse.X, mouse.Y - 6, 1, 13), Color.White);
+        // Cruz en la posición del ratón (solo en el turno del jugador).
+        // Cross at the mouse position (only during the player's turn).
+        if (!isAiTurn)
+        {
+            Point mouse = InputManager.MousePosition;
+            DrawRect(sb, new Rectangle(mouse.X - 6, mouse.Y, 13, 1), Color.White);
+            DrawRect(sb, new Rectangle(mouse.X, mouse.Y - 6, 1, 13), Color.White);
+        }
     }
 
     // Información del turno y controles en pantalla.
     // Turn information and on-screen controls.
-    private void DrawHud(SpriteBatch sb, Penguin current)
+    private void DrawHud(SpriteBatch sb, Penguin current, bool isAiTurn)
     {
         Weapon weapon = _inventories[current.Team].SelectedWeapon;
         string power = _isCharging ? $"  |  Potencia: {(int)(_power * 100)}%" : "";
 
         DrawCenteredText(sb, $"Turno {_turns.TurnNumber}: {current.Name} ({current.Health} HP)  |  Arma: {weapon.Name}{power}", 20, Color.White, 0.75f);
-        DrawCenteredText(sb, "A/D: caminar  |  Espacio: saltar  |  Ratón: apuntar  |  Clic: disparar (mantener para cargar)", 56, Color.LightGray, 0.5f);
-        DrawCenteredText(sb, "1-3 o rueda: arma  |  H: botiquín  |  P: pasar turno  |  Esc: pausa", 78, Color.LightGray, 0.5f);
+
+        if (isAiTurn)
+        {
+            // Quién decidió (LLM o IA clásica) y la meta elegida.
+            // Who decided (LLM or classic AI) and the chosen goal.
+            string goal = _ai.CurrentGoal != null ? $"  |  {_ai.CurrentGoal}" : "";
+            DrawCenteredText(sb, $"Turno de la IA ({AiDifficultySettings.GetName(_difficulty)})  |  {_ai.AdvisorStatus}{goal}  |  Esc: pausa", 56, Color.LightGray, 0.5f);
+        }
+        else
+        {
+            DrawCenteredText(sb, "A/D: caminar  |  Espacio: saltar  |  Ratón: apuntar  |  Clic: disparar (mantener para cargar)", 56, Color.LightGray, 0.5f);
+            DrawCenteredText(sb, "1-3 o rueda: arma  |  H: botiquín  |  P: pasar turno  |  Esc: pausa", 78, Color.LightGray, 0.5f);
+        }
     }
 
     // Barra de armas del equipo del turno y botiquines disponibles.
@@ -686,7 +842,9 @@ public class GameplayScreen : Screen
     // Notice at the start of each turn.
     private void DrawTurnBanner(SpriteBatch sb, Penguin current)
     {
-        string owner = current.Team == _playerTeam ? "Tu equipo" : "Equipo rival";
+        string owner = current.Team == _playerTeam
+            ? "Tu equipo"
+            : $"IA - {AiDifficultySettings.GetName(_difficulty)}";
 
         DrawRect(sb, new Rectangle(0, 230, Game1.ScreenWidth, 115), Color.Black * 0.55f);
         DrawCenteredText(sb, $"Turno de {current.Name}", 245, PenguinProfiles.GetTeamColor(current.Team), 1.3f);
@@ -708,6 +866,44 @@ public class GameplayScreen : Screen
         }
 
         DrawCenteredText(sb, "Flechas para moverte, Enter para elegir, Esc para continuar", 520, Color.Gray, 0.6f);
+    }
+
+    // Globo de diálogo blanco sobre el pingüino que habla; se desvanece al final.
+    // White speech bubble above the speaking penguin; it fades out at the end.
+    private void DrawSpeechBubble(SpriteBatch sb)
+    {
+        if (_speechTimer <= 0f || string.IsNullOrEmpty(_speechText) || _speechPenguin == null || !_speechPenguin.IsAlive)
+            return;
+
+        const float scale = 0.45f;
+        Vector2 size = Game.Font.MeasureString(_speechText) * scale;
+
+        // Se desvanece durante el último medio segundo.
+        // Fades out during the last half second.
+        float alpha = Math.Min(1f, _speechTimer / 0.5f);
+
+        int width = (int)size.X + 16;
+        int height = (int)size.Y + 10;
+
+        // Mantener el globo dentro de la pantalla.
+        // Keep the bubble inside the screen.
+        int x = Math.Clamp(_speechPenguin.X - width / 2, 5, Game1.ScreenWidth - width - 5);
+        int y = Math.Max(100, (int)_speechPenguin.Center.Y - 100);
+
+        // Fondo, "colita" del globo y texto.
+        // Background, bubble "tail" and text.
+        DrawRect(sb, new Rectangle(x, y, width, height), Color.White * (0.9f * alpha));
+        DrawRect(sb, new Rectangle(_speechPenguin.X - 3, y + height, 6, 6), Color.White * (0.9f * alpha));
+        sb.DrawString(Game.Font, _speechText, new Vector2(x + 8, y + 5), Color.Black * alpha,
+            0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+    }
+
+    // Dibuja un texto centrado en una posición del mapa.
+    // Draws text centered at a map position.
+    private void DrawTextAt(SpriteBatch sb, string text, Vector2 center, Color color, float scale)
+    {
+        Vector2 size = Game.Font.MeasureString(text) * scale;
+        sb.DrawString(Game.Font, text, center - size / 2f, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
     }
 
     // Dibuja un cielo con degradado vertical, de noche arriba a más claro abajo.
