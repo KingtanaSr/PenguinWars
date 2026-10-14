@@ -2,9 +2,9 @@
 
 A turn-based 2D artillery game inspired by **Worms**, built from scratch in **C#** with **MonoGame**.
 
-Two teams of penguins face off on a snowy battlefield: the **Earth Penguins** defending their home, and the **Alien Penguins** whose spaceship crash-landed on the ice. The player picks a side, and an AI controls the opposing team.
+Two teams of penguins face off on a snowy battlefield: the **Earth Penguins** defending their home, and the **Alien Penguins** whose spaceship crash-landed on the ice. The player picks a side, and a **hybrid AI** (a local LLM strategist plus a classic simulation-based planner) controls the opposing team.
 
-> **Status:** Work in progress (Phase 8 of 9 completed, Phase 8.5 next). This is a personal learning project focused on C#, game architecture, game physics and game AI.
+> **Status:** Work in progress (Phase 8.5 of 9 completed). This is a personal learning project focused on C#, game architecture, game physics and game AI.
 
 ---
 
@@ -48,7 +48,7 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 
 ## Gameplay
 
-- **Single player against the AI:** choose your team and the AI difficulty in the main menu.
+- **Single player against the AI:** choose your team, the AI difficulty and whether the LLM strategist is enabled in the main menu.
 - **Turn-based:** on each turn, one member of the active team can move and act, with a **45-second** time limit.
 - A turn ends when the active penguin **fires a weapon, uses a medkit, passes or runs out of time**.
 - Each team **rotates through its living members** every turn, and the starting team is chosen at random.
@@ -56,6 +56,7 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 - **Projectile physics:** shots are affected by angle, power, gravity and wind, which **changes every turn**.
 - **Health bars** for every penguin, plus fall damage and drowning in icy water.
 - **Items** spawn on the map, can be picked up by touching them, and sometimes fall from the sky as **supply drops**.
+- **AI penguins talk:** with the LLM strategist enabled, they taunt you in character through speech bubbles.
 - The match ends when **all members of a team are eliminated** or the player **surrenders**. If both teams are eliminated at the same time, it is a **draw**.
 
 ## Development Progress
@@ -70,8 +71,8 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 | 6 | Turn system, teams and win/surrender conditions | ✅ Done |
 | 7 | Items: medkits, ammo crates and weapon sets | ✅ Done |
 | 8 | Classic AI opponent (shot simulation) | ✅ Done |
-| 8.5 | LLM strategist layer with a local model (Ollama) | 🚧 Next |
-| 9 | Art, sound, map wreckage and polish | ⏳ Planned |
+| 8.5 | LLM strategist layer with a local model (Ollama) | ✅ Done |
+| 9 | Art, sound, map wreckage and polish | 🚧 Next |
 
 ### ✅ Phase 1: Project setup
 - MonoGame DesktopGL project created with the .NET CLI.
@@ -102,7 +103,7 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 
 ### ✅ Phase 5: Weapons
 - Mouse aiming: the penguin faces the cursor and an aim line shows the shot direction.
-- Charged shots: holding the left button fills the power (shown on the aim dots and HUD); releasing it fires, and reaching full power fires automatically.
+- Charged shots: holding the left button fills the power; releasing it fires, and reaching full power fires automatically.
 - Projectiles with parabolic trajectories using Euler integration, affected by gravity and wind.
 - Sub-stepping (pixel-by-pixel movement) to prevent fast projectiles from tunneling through terrain.
 - Random wind with an on-screen indicator.
@@ -139,24 +140,38 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 - **Human-like execution:** the AI rotates its aim gradually and charges power like a player would.
 - **Difficulty levels** (Easy, Normal, Hard) that add random angle and power error, selectable in the main menu.
 
-### 🚧 Phase 8.5: LLM strategist (next)
-- Hybrid AI: a local language model (Ollama) acts as the **strategic "brain"**, choosing between options already computed and validated by the game (target, weapon, heal or reposition).
-- The classic AI remains the **"hands"**, executing the chosen plan with precise simulation.
-- In-character dialogue for the AI penguins.
-- Asynchronous requests with a timeout and automatic fallback to the classic AI, behind a C# interface so providers can be swapped.
+### ✅ Phase 8.5: LLM strategist (hybrid AI)
+- A local language model running on **Ollama** (default: `qwen2.5:1.5b`) acts as the **strategic "brain"** of the AI team.
+- Each AI turn, the game builds a **text snapshot** of the match (health, distances, heights, wind, weapons, ammo and medkits) and a list of **valid options computed by the game** (attack a specific enemy or heal).
+- The model answers in **constrained JSON** (`{"choice": ..., "taunt": ...}`) using Ollama's JSON mode.
+- **Validation and graceful degradation:** only options that exist in the list are accepted; on timeout (12 s), invalid output or if Ollama is not running, the classic AI decides alone.
+- The classic planner remains the **"hands"**: it searches for the best shot **focused on the target chosen by the LLM**.
+- **Asynchronous requests** (`async`/`await` with `Task`) polled from the game loop, so the game stays responsive; the request only reads an immutable text snapshot, never the game objects (thread safety).
+- **Provider-agnostic design:** the AI depends on an `IStrategyAdvisor` interface, so Ollama could be swapped for a cloud API without touching the AI logic.
+- **Model warm-up** at the start of each match, and `keep_alive` to keep the model loaded between turns.
+- **In-character taunts** shown in speech bubbles, sanitized to the characters supported by the game font.
+- HUD shows who made the decision (LLM or classic AI) and the chosen goal, and the strategist can be toggled in the main menu.
+
+### 🚧 Phase 9: Art, sound and polish (next)
+- Sprites for penguins, weapons, items and the spaceship wreckage based on the concept art.
+- Sound effects and music.
+- Visual polish and final adjustments.
 
 ## Game AI
 
-The opposing team is controlled by a **two-layer AI design**:
+The opposing team is controlled by a **two-layer hybrid AI**, following the same pattern used in modern AI agents: **an LLM plans, deterministic tools execute**.
 
-1. **Classic layer (implemented):** a deterministic planner that simulates candidate shots with the real game physics and picks the one with the best score. It is precise, fast and free, and it always works as a fallback.
-2. **LLM layer (Phase 8.5):** a small local language model that receives a text summary of the match and makes high-level strategic choices among valid options, plus in-character dialogue. This follows the same pattern used in modern AI agents: **an LLM plans, deterministic tools execute**.
+1. **Strategic layer (LLM):** a small local model receives a text summary of the match and picks one of the valid options computed by the game, plus an in-character line of dialogue.
+2. **Tactical layer (classic):** a deterministic planner that simulates candidate shots with the real game physics and picks the one with the best score, prioritizing the target chosen by the LLM. It is precise, fast and free, and it always works as a fallback.
+
+The LLM never controls aiming directly: language models are not good at precise numeric physics, so they only make high-level decisions that are validated before use.
 
 ## Tech Stack
 
 - **Language:** C#
 - **Framework:** [MonoGame](https://monogame.net/) (DesktopGL)
 - **Runtime:** .NET SDK 9 or later
+- **Local LLM:** [Ollama](https://ollama.com/) with `qwen2.5:1.5b` (optional)
 - **Editor:** Visual Studio Code with C# Dev Kit
 - **Version control:** Git & GitHub
 
@@ -168,23 +183,26 @@ The game is built around MonoGame's **game loop** (`Update` for logic, `Draw` fo
 - **`InputManager`:** stores the keyboard and mouse state of the current and previous frames, allowing the game to distinguish between a key being *held*, *just pressed* and *just released*, and to read the mouse wheel.
 - **`TurnManager`:** finite state machine that decides whose turn it is, tracks the turn timer and detects when a turn is over.
 - **`TeamInventory`:** each team's ammo, selected weapon and medkits.
-- **`AiController`:** finite state machine for the AI's turn (**Thinking**, **Aiming**, **Charging**, **Done**) that returns actions for the match to execute.
-- **`ShotPlanner`:** frame-budgeted search that simulates and scores candidate shots.
+- **`AiController`:** finite state machine for the AI's turn (**AskingAdvisor**, **Thinking**, **Aiming**, **Charging**, **Done**) that returns actions for the match to execute.
+- **`ShotPlanner`:** frame-budgeted search that simulates and scores candidate shots, with an optional priority target.
+- **`IStrategyAdvisor` / `OllamaStrategyAdvisor`:** provider-agnostic interface and its Ollama implementation (HTTP + JSON with `HttpClient` and `System.Text.Json`).
+- **`StrategyContext`:** immutable text snapshot of the match and the list of valid options sent to the LLM.
 - **`Terrain`:** pixel mask for collisions and destruction, rendered as a texture that is only re-uploaded when it changes.
-- **`Penguin`:** encapsulates movement, physics, health and rendering of each character. Health and position can only be modified through its own methods.
+- **`Penguin`:** encapsulates movement, physics, health and rendering of each character.
 - **`Item`:** medkits and ammo crates with simple gravity, picked up on contact.
 - **`Weapon`:** immutable weapon definitions (data only), separated from the behavior of `Projectile`.
 - **`Projectile`:** simulates the flight of a shot, bounces for timed weapons and detects hits. The same class is used for real shots and for the AI's simulations.
 - **`Explosion`** and **`FloatingText`:** short-lived visual effects that remove themselves when finished.
 - **`Wind`:** random horizontal acceleration applied to projectiles.
+- **`GameSettings`:** global settings such as enabling the LLM strategist.
 - **Content Pipeline:** fonts, sprites and sounds are processed at build time through `Content.mgcb`.
 
 ```
 PenguinWars/
-├── AI/             # AI controller, shot planner and difficulty levels
+├── AI/             # AI controller, shot planner, difficulty and LLM strategist
 ├── Content/        # Game assets (fonts, sprites, sounds)
 ├── Combat/         # Weapons, projectiles and explosions
-├── Core/           # Engine-level classes (screens, input, teams, floating texts)
+├── Core/           # Engine-level classes (screens, input, teams, settings, floating texts)
 ├── Entities/       # Penguins, their profiles and map items
 ├── Gameplay/       # Match rules (turn system, team inventories)
 ├── Screens/        # Game screens (menu, gameplay, game over)
@@ -202,6 +220,11 @@ PenguinWars/
 ```
   dotnet new install MonoGame.Templates.CSharp
 ```
+- **Optional, for the LLM strategist:** [Ollama](https://ollama.com/) and a small model:
+```
+  ollama pull qwen2.5:1.5b
+```
+  Without Ollama, the game automatically uses the classic AI.
 
 ### Run the game
 ```
@@ -210,12 +233,19 @@ cd PenguinWars
 dotnet run
 ```
 
+### Use a different local model (optional)
+```
+# PowerShell
+$env:PENGUINWARS_OLLAMA_MODEL = "qwen2.5:0.5b"
+dotnet run
+```
+
 ## Controls (current)
 
 | Input | Action |
 |---|---|
 | ↑ / ↓ | Navigate menus |
-| ← / → | Change AI difficulty (main menu) |
+| ← / → | Change AI difficulty / toggle LLM strategist (main menu) |
 | Enter | Select option |
 | A / D | Walk left / right |
 | Space | Jump |
