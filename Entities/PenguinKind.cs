@@ -63,4 +63,9 @@ public static class PenguinProfiles
     // Color that identifies each team (health bar border).
     public static Color GetTeamColor(Team team) =>
         team == Team.Heroes ? Color.CornflowerBlue : Color.LimeGreen;
+
+    // Nombre del equipo para mostrar en pantalla.
+    // Team name to display on screen.
+    public static string GetTeamName(Team team) =>
+        team == Team.Heroes ? "Pingüinos Terrestres" : "Pingüinos Alienígenas";
 }

@@ -4,7 +4,9 @@ A turn-based 2D artillery game inspired by **Worms**, built from scratch in **C#
 
 Two teams of penguins face off on a snowy battlefield: the **Earth Penguins** defending their home, and the **Alien Penguins** whose spaceship crash-landed on the ice. The player picks a side, and an AI controls the opposing team.
 
-> **Status:** Work in progress (Phase 5 of 9 completed). This is a personal learning project focused on C#, game architecture, game physics and game AI.
+> **Status:** Work in progress (Phase 6 of 9 completed). This is a personal learning project focused on C#, game architecture, game physics and game AI.
+>
+> **Note:** until the AI is implemented (Phase 8), the opposing team is also controlled by the player (local hot seat).
 
 ---
 
@@ -38,13 +40,14 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 
 ## Gameplay
 
-- **Turn-based:** on each turn, one member of the active team can move and act.
-- A turn ends when the active penguin **uses an item, fires a weapon or passes**.
+- **Turn-based:** on each turn, one member of the active team can move and act, with a **45-second** time limit.
+- A turn ends when the active penguin **fires a weapon, uses an item, passes or runs out of time**.
+- Each team **rotates through its living members** every turn, and the starting team is chosen at random.
 - **Destructible terrain:** explosions carve the snowy landscape.
-- **Projectile physics:** shots are affected by angle, power, gravity and wind.
+- **Projectile physics:** shots are affected by angle, power, gravity and wind, which **changes every turn**.
 - **Health bars** for every penguin, plus fall damage and drowning in icy water.
 - **Medkits and ammo crates** scattered across the map can be picked up and used.
-- The match ends when **all members of a team are eliminated** or a team **surrenders**.
+- The match ends when **all members of a team are eliminated** or a team **surrenders**. If both teams are eliminated at the same time, it is a **draw**.
 
 ## Development Progress
 
@@ -55,8 +58,8 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 | 3 | Destructible terrain | ✅ Done |
 | 4 | Penguins: movement, physics and health | ✅ Done |
 | 5 | Weapons, projectiles, wind and explosions | ✅ Done |
-| 6 | Turn system, teams and win/surrender conditions | 🚧 Next |
-| 7 | Items: medkits, ammo crates and weapon sets | ⏳ Planned |
+| 6 | Turn system, teams and win/surrender conditions | ✅ Done |
+| 7 | Items: medkits, ammo crates and weapon sets | 🚧 Next |
 | 8 | AI-controlled opponent team | ⏳ Planned |
 | 9 | Art, sound, map wreckage and polish | ⏳ Planned |
 
@@ -92,7 +95,7 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 - Charged shots: holding the left button fills the power (shown on the aim dots and HUD); releasing it fires, and reaching full power fires automatically.
 - Projectiles with parabolic trajectories using Euler integration, affected by gravity and wind.
 - Sub-stepping (pixel-by-pixel movement) to prevent fast projectiles from tunneling through terrain.
-- Random wind that changes after every shot, with an on-screen indicator.
+- Random wind with an on-screen indicator.
 - Explosions that carve the terrain, damage and knock back penguins, with a fading flash effect.
 - Data-driven weapons: each weapon only defines values (speed, gravity, wind, radius, damage), so new weapons need no new logic.
 - First weapons: **Bazooka** (Earth team) and **Plasma Rifle** (Alien team).
@@ -103,11 +106,21 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 | Bazooka | 750 | 100% | 100% | 40 px | 45 |
 | Plasma Rifle | 900 | 60% | 30% | 30 px | 35 |
 
-### 🚧 Phase 6: Turn system (next)
-- Turns alternating between teams, rotating through each team's members.
-- Ending a turn by firing or passing, with a turn timer.
-- Wind changing every turn.
-- Win condition when a team is eliminated, surrender option and game over screen.
+### ✅ Phase 6: Turn system
+- `TurnManager` implemented as a finite state machine with three phases per turn: **Starting** (turn notice), **Playing** (move, aim, fire) and **Resolving** (waits until projectiles, explosions and falling penguins settle).
+- Teams alternate turns, and each team rotates through its living members, skipping eliminated ones.
+- Random starting team and new wind every turn.
+- 45-second turn timer, shown in red during the last 10 seconds.
+- Turn ends on firing, passing, timeout or the active penguin's death.
+- Turn start banner showing the active penguin, its team and whether it is the player's team.
+- Pause menu with **Resume**, **Surrender** and **Exit to menu**.
+- Game over screen with **Victory**, **Defeat** or **Draw**, the reason for the ending and a **Rematch** option.
+- Removed the temporary test controls (switch penguin and regenerate map).
+
+### 🚧 Phase 7: Items and weapon sets (next)
+- Full weapon sets per team: Bazooka, Grenade and Shotgun for Earth penguins; Plasma Rifle, Gravity Grenade and Ray Gun for Alien penguins.
+- Weapon selection during the turn and limited ammo per weapon.
+- Medkits and ammo crates placed on the map that can be picked up and used.
 
 ## Game AI (planned)
 
@@ -130,12 +143,14 @@ The game is built around MonoGame's **game loop** (`Update` for logic, `Draw` fo
 
 - **`ScreenManager`:** switches between screens (menu, gameplay, game over) using a state pattern. Each screen inherits from an abstract `Screen` class.
 - **`InputManager`:** stores the keyboard and mouse state of the current and previous frames, allowing the game to distinguish between a key being *held*, *just pressed* and *just released*.
+- **`TurnManager`:** finite state machine that decides whose turn it is, tracks the turn timer and detects when a turn is over. It knows nothing about projectiles or rendering; the gameplay screen only tells it when the world has settled.
 - **`Terrain`:** pixel mask for collisions and destruction, rendered as a texture that is only re-uploaded when it changes.
 - **`Penguin`:** encapsulates movement, physics, health and rendering of each character. Health and position can only be modified through its own methods.
 - **`Weapon`:** immutable weapon definitions (data only), separated from the behavior of `Projectile`.
 - **`Projectile`:** simulates the flight of a shot and detects hits against the terrain and penguins.
 - **`Explosion`:** short-lived visual effect that removes itself when finished.
 - **`Wind`:** random horizontal acceleration applied to projectiles.
+- **`TeamExtensions`:** extension method (`team.Opponent()`) that adds behavior to the `Team` enum.
 - **Content Pipeline:** fonts, sprites and sounds are processed at build time through `Content.mgcb`.
 
 ```
@@ -144,7 +159,8 @@ PenguinWars/
 ├── Combat/         # Weapons, projectiles and explosions
 ├── Core/           # Engine-level classes (screens, input, teams)
 ├── Entities/       # Game characters (penguins and their profiles)
-├── Screens/        # Game screens (menu, gameplay)
+├── Gameplay/       # Match rules (turn system)
+├── Screens/        # Game screens (menu, gameplay, game over)
 ├── World/          # Destructible terrain and wind
 ├── docs/           # Concept art and documentation images
 ├── Game1.cs        # Main game class and game loop
@@ -171,21 +187,15 @@ dotnet run
 
 | Input | Action |
 |---|---|
-| ↑ / ↓ | Navigate menu |
-| Enter | Select option (menu) |
+| ↑ / ↓ | Navigate menus |
+| Enter | Select option |
 | A / D | Walk left / right |
 | Space | Jump |
 | Mouse | Aim |
 | Hold left click | Charge shot power |
 | Release left click | Fire |
-| Esc | Return to menu |
-
-**Temporary test controls** (will be replaced by the turn system):
-
-| Key | Action |
-|---|---|
-| Tab | Switch to the next penguin |
-| R | Generate a new map |
+| P | Pass the turn |
+| Esc | Pause menu (resume, surrender, exit to menu) |
 
 ## Author
 

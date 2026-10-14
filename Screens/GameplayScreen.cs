@@ -10,6 +10,7 @@ using Microsoft.Xna.Framework.Input;
 using PenguinWars.Combat;
 using PenguinWars.Core;
 using PenguinWars.Entities;
+using PenguinWars.Gameplay;
 using PenguinWars.World;
 
 namespace PenguinWars.Screens;
@@ -33,8 +34,12 @@ public class GameplayScreen : Screen
     private const int AimDotCount = 8;
     private const float AimDotSpacing = 6f;
 
-    // Equipo que controla el jugador; la IA controla el otro.
-    // Team controlled by the player; the AI controls the other one.
+    // Opciones del menú de pausa.
+    // Pause menu options.
+    private readonly string[] _pauseOptions = { "Continuar", "Rendirse", "Salir al menú" };
+
+    // Equipo que controla el jugador; la IA controlará el otro en la Fase 8.
+    // Team controlled by the player; the AI will control the other one in Phase 8.
     private readonly Team _playerTeam;
 
     private readonly Random _random = new();
@@ -42,6 +47,7 @@ public class GameplayScreen : Screen
     private readonly List<Explosion> _explosions = new();
     private readonly Wind _wind = new();
     private Terrain _terrain;
+    private TurnManager _turns;
 
     // Proyectil en vuelo (solo puede haber uno a la vez).
     // Projectile in flight (there can only be one at a time).
@@ -52,9 +58,10 @@ public class GameplayScreen : Screen
     private bool _isCharging;
     private float _power;
 
-    // Pingüino controlado actualmente (temporal hasta tener turnos).
-    // Currently controlled penguin (temporary until turns exist).
-    private int _selectedIndex;
+    // Estado del menú de pausa.
+    // Pause menu state.
+    private bool _isPaused;
+    private int _pauseSelected;
 
     public GameplayScreen(Game1 game, Team playerTeam) : base(game)
     {
@@ -66,8 +73,8 @@ public class GameplayScreen : Screen
         StartNewMatch();
     }
 
-    // Crea un mapa nuevo, coloca a los equipos y reinicia el estado del combate.
-    // Creates a new map, places the teams and resets the combat state.
+    // Crea el mapa, coloca a los equipos y empieza el primer turno.
+    // Creates the map, places the teams and starts the first turn.
     private void StartNewMatch()
     {
         _terrain?.Dispose();
@@ -85,9 +92,10 @@ public class GameplayScreen : Screen
         SpawnTeam(Team.Heroes, 0.08f);
         SpawnTeam(Team.Aliens, 0.72f);
 
-        // Empezar controlando al primer pingüino del equipo del jugador.
-        // Start by controlling the first penguin of the player's team.
-        _selectedIndex = _penguins.FindIndex(p => p.Team == _playerTeam);
+        // El equipo que empieza se elige al azar.
+        // The starting team is chosen at random.
+        Team firstTeam = _random.Next(2) == 0 ? Team.Heroes : Team.Aliens;
+        _turns = new TurnManager(_penguins, firstTeam);
     }
 
     // Coloca a los miembros de un equipo separados entre sí, con algo de variación.
@@ -118,44 +126,40 @@ public class GameplayScreen : Screen
         // Time elapsed since the previous frame, in seconds.
         float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
 
-        // Volver al menú con Esc.
-        // Return to the menu with Esc.
+        // Esc abre o cierra el menú de pausa.
+        // Esc opens or closes the pause menu.
         if (InputManager.WasKeyPressed(Keys.Escape))
         {
-            _terrain.Dispose();
-            Game.Screens.ChangeScreen(new MenuScreen(Game));
+            _isPaused = !_isPaused;
+            _pauseSelected = 0;
+            _isCharging = false;
+            _power = 0f;
             return;
         }
 
-        // PRUEBA: R reinicia la partida con un mapa nuevo.
-        // TEST: R restarts the match with a new map.
-        if (InputManager.WasKeyPressed(Keys.R))
-            StartNewMatch();
+        // Mientras está en pausa, el juego se congela.
+        // While paused, the game freezes.
+        if (_isPaused)
+        {
+            UpdatePauseMenu();
+            return;
+        }
 
-        // PRUEBA: Tab cambia de pingüino, solo si no hay un disparo en curso.
-        // TEST: Tab switches penguin, only if no shot is in progress.
-        if (InputManager.WasKeyPressed(Keys.Tab) && _projectile == null && !_isCharging)
-            SelectNextPenguin();
-
-        // Si el pingüino seleccionado murió, pasar al siguiente.
-        // If the selected penguin died, switch to the next one.
-        if (!_penguins[_selectedIndex].IsAlive)
-            SelectNextPenguin();
-
-        Penguin current = _penguins[_selectedIndex];
-
-        // Solo se puede actuar en el suelo y sin proyectiles en el aire.
-        // Actions are only allowed on the ground and with no projectile in the air.
+        Penguin current = _turns.CurrentPenguin;
+        bool isPlaying = _turns.Phase == TurnPhase.Playing && _projectile == null;
         bool canAct = CanAct(current);
 
-        // Movimiento con A y D, salto con Espacio; bloqueado mientras se carga o vuela un disparo.
-        // Movement with A and D, jump with Space; blocked while charging or while a shot is flying.
+        // P pasa el turno sin disparar.
+        // P passes the turn without firing.
+        if (isPlaying && !_isCharging && InputManager.WasKeyPressed(Keys.P))
+            _turns.EndAction();
+
+        // Movimiento con A y D, salto con Espacio; solo en la fase de juego y sin cargar.
+        // Movement with A and D, jump with Space; only in the playing phase and while not charging.
         int moveDirection = 0;
         bool jumpRequested = false;
-        if (_projectile == null && !_isCharging)
+        if (_turns.Phase == TurnPhase.Playing && _projectile == null && !_isCharging)
         {
-            // Para invertir los controles, intercambia Keys.A y Keys.D en estas dos líneas.
-            // To invert the controls, swap Keys.A and Keys.D in these two lines.
             if (InputManager.IsKeyDown(Keys.A)) moveDirection -= 1;
             if (InputManager.IsKeyDown(Keys.D)) moveDirection += 1;
             jumpRequested = InputManager.WasKeyPressed(Keys.Space);
@@ -168,12 +172,12 @@ public class GameplayScreen : Screen
 
         HandleAimAndFire(dt, current, canAct);
 
-        // Actualizar a todos los pingüinos; solo el seleccionado recibe la entrada.
-        // Update all penguins; only the selected one receives input.
-        for (int i = 0; i < _penguins.Count; i++)
+        // Actualizar a todos los pingüinos; solo el del turno recibe la entrada.
+        // Update all penguins; only the one whose turn it is receives input.
+        foreach (Penguin penguin in _penguins)
         {
-            bool isSelected = i == _selectedIndex;
-            _penguins[i].Update(dt, _terrain, isSelected ? moveDirection : 0, isSelected && jumpRequested);
+            bool isCurrent = penguin == current;
+            penguin.Update(dt, _terrain, isCurrent ? moveDirection : 0, isCurrent && jumpRequested);
         }
 
         UpdateProjectile(dt);
@@ -185,10 +189,91 @@ public class GameplayScreen : Screen
         _explosions.RemoveAll(e => e.IsFinished);
 
         _terrain.ApplyChanges();
+
+        // Avanzar el turno y, si terminó, pasar al siguiente o terminar la partida.
+        // Advance the turn and, if it is over, move to the next one or end the match.
+        _turns.Update(dt, IsWorldSettled());
+        if (_turns.IsTurnOver)
+            EndTurn();
     }
 
+    // Solo se puede actuar en la fase de juego, en el suelo y sin proyectiles en el aire.
+    // Actions are only allowed in the playing phase, on the ground and with no projectile in the air.
     private bool CanAct(Penguin penguin) =>
-        _projectile == null && penguin.IsAlive && penguin.IsGrounded;
+        _turns.Phase == TurnPhase.Playing &&
+        _projectile == null &&
+        penguin.IsAlive &&
+        penguin.IsGrounded;
+
+    // El mundo está quieto si no hay proyectiles, explosiones ni pingüinos en el aire.
+    // The world is settled if there are no projectiles, explosions or airborne penguins.
+    private bool IsWorldSettled() =>
+        _projectile == null &&
+        _explosions.Count == 0 &&
+        _penguins.All(p => !p.IsAlive || p.IsGrounded);
+
+    // Al terminar un turno: revisar si alguien ganó; si no, cambiar el viento y seguir.
+    // When a turn ends: check whether someone won; otherwise change the wind and continue.
+    private void EndTurn()
+    {
+        bool heroesAlive = _turns.IsTeamAlive(Team.Heroes);
+        bool aliensAlive = _turns.IsTeamAlive(Team.Aliens);
+
+        if (!heroesAlive || !aliensAlive)
+        {
+            if (heroesAlive)
+                GoToGameOver(Team.Heroes, "El equipo rival fue eliminado");
+            else if (aliensAlive)
+                GoToGameOver(Team.Aliens, "El equipo rival fue eliminado");
+            else
+                GoToGameOver(null, "Ambos equipos fueron eliminados");
+            return;
+        }
+
+        _wind.Randomize(_random);
+        _turns.BeginNextTurn();
+    }
+
+    private void GoToGameOver(Team? winner, string reason)
+    {
+        _terrain.Dispose();
+        Game.Screens.ChangeScreen(new GameOverScreen(Game, _playerTeam, winner, reason));
+    }
+
+    // Navegación del menú de pausa.
+    // Pause menu navigation.
+    private void UpdatePauseMenu()
+    {
+        if (InputManager.WasKeyPressed(Keys.Down))
+            _pauseSelected = (_pauseSelected + 1) % _pauseOptions.Length;
+        if (InputManager.WasKeyPressed(Keys.Up))
+            _pauseSelected = (_pauseSelected - 1 + _pauseOptions.Length) % _pauseOptions.Length;
+
+        if (!InputManager.WasKeyPressed(Keys.Enter))
+            return;
+
+        switch (_pauseSelected)
+        {
+            case 0:
+                // Continuar la partida.
+                // Resume the match.
+                _isPaused = false;
+                break;
+
+            case 1:
+                // Rendirse: gana el equipo contrario al del jugador.
+                // Surrender: the team opposing the player wins.
+                GoToGameOver(_playerTeam.Opponent(), $"Los {PenguinProfiles.GetTeamName(_playerTeam)} se rindieron");
+                break;
+
+            case 2:
+                // Salir al menú principal.
+                // Exit to the main menu.
+                _terrain.Dispose();
+                Game.Screens.ChangeScreen(new MenuScreen(Game));
+                break;
+        }
+    }
 
     // Mantener el clic carga la potencia; soltarlo (o llegar al máximo) dispara.
     // Holding the click charges power; releasing it (or reaching the maximum) fires.
@@ -227,8 +312,8 @@ public class GameplayScreen : Screen
         }
     }
 
-    // Crea el proyectil en dirección al ratón con la potencia cargada.
-    // Creates the projectile towards the mouse with the charged power.
+    // Crea el proyectil hacia el ratón y termina la acción del turno.
+    // Creates the projectile towards the mouse and ends the turn's action.
     private void Fire(Penguin shooter)
     {
         Weapon weapon = Weapon.ForTeam(shooter.Team);
@@ -239,6 +324,10 @@ public class GameplayScreen : Screen
         _projectile = new Projectile(weapon, spawnPosition, velocity, shooter);
         _isCharging = false;
         _power = 0f;
+
+        // Disparar termina la acción: ahora se espera a que todo se calme.
+        // Firing ends the action: now we wait for everything to settle.
+        _turns.EndAction();
     }
 
     // Dirección normalizada desde el pecho del pingüino hacia el ratón.
@@ -256,8 +345,8 @@ public class GameplayScreen : Screen
         return direction;
     }
 
-    // Mueve el proyectil; si explota, aplica la explosión; al terminar, cambia el viento.
-    // Moves the projectile; if it explodes, applies the explosion; when done, changes the wind.
+    // Mueve el proyectil y, si choca, aplica la explosión.
+    // Moves the projectile and, if it hits something, applies the explosion.
     private void UpdateProjectile(float dt)
     {
         if (_projectile == null)
@@ -272,10 +361,6 @@ public class GameplayScreen : Screen
             TriggerExplosion(_projectile.Position, _projectile.Weapon);
 
         _projectile = null;
-
-        // Nuevo viento después de cada disparo (en la Fase 6 será por turno).
-        // New wind after each shot (in Phase 6 it will be per turn).
-        _wind.Randomize(_random);
     }
 
     // Destruye terreno, daña a los pingüinos cercanos y crea el destello.
@@ -290,39 +375,35 @@ public class GameplayScreen : Screen
         _explosions.Add(new Explosion(position, weapon.ExplosionRadius));
     }
 
-    // Selecciona el siguiente pingüino vivo de la lista.
-    // Selects the next living penguin in the list.
-    private void SelectNextPenguin()
-    {
-        if (!_penguins.Any(p => p.IsAlive))
-            return;
-
-        do
-        {
-            _selectedIndex = (_selectedIndex + 1) % _penguins.Count;
-        }
-        while (!_penguins[_selectedIndex].IsAlive);
-    }
-
     public override void Draw(SpriteBatch sb)
     {
         DrawSky(sb);
         _terrain.Draw(sb);
 
-        for (int i = 0; i < _penguins.Count; i++)
-            _penguins[i].Draw(sb, Game.Pixel, Game.Font, i == _selectedIndex);
+        Penguin current = _turns.CurrentPenguin;
+
+        // La flecha dorada marca al pingüino del turno.
+        // The golden arrow marks the penguin whose turn it is.
+        foreach (Penguin penguin in _penguins)
+            penguin.Draw(sb, Game.Pixel, Game.Font, penguin == current);
 
         _projectile?.Draw(sb, Game.Circle);
 
         foreach (Explosion explosion in _explosions)
             explosion.Draw(sb, Game.Circle);
 
-        Penguin current = _penguins[_selectedIndex];
         if (CanAct(current))
             DrawAim(sb, current);
 
         DrawHud(sb, current);
+        DrawTimer(sb);
         _wind.Draw(sb, Game.Pixel, Game.Font, Game1.ScreenWidth);
+
+        if (_turns.Phase == TurnPhase.Starting)
+            DrawTurnBanner(sb, current);
+
+        if (_isPaused)
+            DrawPauseMenu(sb);
     }
 
     // Mira: puntos en la dirección del disparo que se llenan con la potencia, y una cruz en el ratón.
@@ -352,16 +433,58 @@ public class GameplayScreen : Screen
         DrawRect(sb, new Rectangle(mouse.X, mouse.Y - 6, 1, 13), Color.White);
     }
 
-    // Información y controles en pantalla.
-    // On-screen information and controls.
+    // Información del turno y controles en pantalla.
+    // Turn information and on-screen controls.
     private void DrawHud(SpriteBatch sb, Penguin current)
     {
         Weapon weapon = Weapon.ForTeam(current.Team);
         string power = _isCharging ? $"  |  Potencia: {(int)(_power * 100)}%" : "";
 
-        DrawCenteredText(sb, $"{current.Name} ({current.Health} HP)  |  Arma: {weapon.Name}{power}", 20, Color.White, 0.75f);
+        DrawCenteredText(sb, $"Turno {_turns.TurnNumber}: {current.Name} ({current.Health} HP)  |  Arma: {weapon.Name}{power}", 20, Color.White, 0.75f);
         DrawCenteredText(sb, "A/D: caminar  |  Espacio: saltar  |  Ratón: apuntar  |  Mantener clic: cargar, soltar: disparar", 56, Color.LightGray, 0.5f);
-        DrawCenteredText(sb, "Tab: cambiar pingüino  |  R: nuevo mapa  |  Esc: menú", 78, Color.LightGray, 0.5f);
+        DrawCenteredText(sb, "P: pasar turno  |  Esc: pausa", 78, Color.LightGray, 0.5f);
+    }
+
+    // Tiempo restante del turno, arriba a la izquierda; en rojo los últimos 10 segundos.
+    // Remaining turn time, top left; red during the last 10 seconds.
+    private void DrawTimer(SpriteBatch sb)
+    {
+        int seconds = (int)MathF.Ceiling(_turns.TimeLeft);
+        Color color = seconds <= 10 ? Color.Red : Color.White;
+
+        DrawRect(sb, new Rectangle(25, 15, 90, 50), Color.Black * 0.4f);
+        sb.DrawString(Game.Font, "Tiempo", new Vector2(35, 18), Color.LightGray,
+            0f, Vector2.Zero, 0.5f, SpriteEffects.None, 0f);
+        sb.DrawString(Game.Font, seconds.ToString(), new Vector2(35, 32), color,
+            0f, Vector2.Zero, 0.9f, SpriteEffects.None, 0f);
+    }
+
+    // Aviso al inicio de cada turno.
+    // Notice at the start of each turn.
+    private void DrawTurnBanner(SpriteBatch sb, Penguin current)
+    {
+        string owner = current.Team == _playerTeam ? "Tu equipo" : "Equipo rival";
+
+        DrawRect(sb, new Rectangle(0, 230, Game1.ScreenWidth, 115), Color.Black * 0.55f);
+        DrawCenteredText(sb, $"Turno de {current.Name}", 245, PenguinProfiles.GetTeamColor(current.Team), 1.3f);
+        DrawCenteredText(sb, $"{PenguinProfiles.GetTeamName(current.Team)}  ({owner})", 300, Color.White, 0.75f);
+    }
+
+    // Menú de pausa sobre el juego oscurecido.
+    // Pause menu over the darkened game.
+    private void DrawPauseMenu(SpriteBatch sb)
+    {
+        DrawRect(sb, new Rectangle(0, 0, Game1.ScreenWidth, Game1.ScreenHeight), Color.Black * 0.6f);
+        DrawCenteredText(sb, "PAUSA", 220, Color.White, 1.5f);
+
+        for (int i = 0; i < _pauseOptions.Length; i++)
+        {
+            bool isSelected = i == _pauseSelected;
+            string text = isSelected ? $"> {_pauseOptions[i]} <" : _pauseOptions[i];
+            DrawCenteredText(sb, text, 320 + i * 50, isSelected ? Color.Gold : Color.White);
+        }
+
+        DrawCenteredText(sb, "Flechas para moverte, Enter para elegir, Esc para continuar", 520, Color.Gray, 0.6f);
     }
 
     // Dibuja un cielo con degradado vertical, de noche arriba a más claro abajo.
