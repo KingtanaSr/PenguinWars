@@ -312,9 +312,21 @@ public class Penguin
         Health = Math.Max(0, Health - amount);
     }
 
+    // Recupera vida sin pasar del máximo.
+    // Restores health without exceeding the maximum.
+    public void Heal(int amount)
+    {
+        if (!IsAlive || amount <= 0)
+            return;
+
+        Health = Math.Min(MaxHealth, Health + amount);
+    }
+
     // Daño y empuje por una explosión cercana: más fuerte cuanto más cerca.
     // Damage and knockback from a nearby explosion: stronger the closer it is.
-    public void ApplyExplosion(Vector2 center, float radius, int maxDamage)
+    // knockbackScale: 1 = empuje normal, negativo = atrae hacia el centro.
+    // knockbackScale: 1 = normal push, negative = pulls towards the center.
+    public void ApplyExplosion(Vector2 center, float radius, int maxDamage, float knockbackScale = 1f)
     {
         if (!IsAlive)
             return;
@@ -331,11 +343,11 @@ public class Penguin
         float strength = 1f - distance / reach;
         TakeDamage((int)(maxDamage * strength));
 
-        // Empujar hacia afuera de la explosión y un poco hacia arriba.
-        // Push away from the explosion and slightly upwards.
+        // Empujar (o atraer) respecto a la explosión, siempre con un poco de elevación.
+        // Push (or pull) relative to the explosion, always with a bit of lift.
         Vector2 direction = distance > 0.01f ? offset / distance : -Vector2.UnitY;
-        Vector2 knockback = direction * 350f * strength;
-        knockback.Y -= 120f * strength;
+        Vector2 knockback = direction * 350f * strength * knockbackScale;
+        knockback.Y -= 120f * strength * Math.Abs(knockbackScale);
         Launch(knockback);
     }
 

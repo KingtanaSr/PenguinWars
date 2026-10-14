@@ -53,4 +53,9 @@ public static class InputManager
     public static bool WasLeftReleased =>
         _currentMouse.LeftButton == ButtonState.Released &&
         _previousMouse.LeftButton == ButtonState.Pressed;
+
+    // Cuánto giró la rueda del ratón desde el frame anterior (positivo = hacia arriba).
+    // How much the mouse wheel turned since the previous frame (positive = up).
+    public static int ScrollDelta =>
+        _currentMouse.ScrollWheelValue - _previousMouse.ScrollWheelValue;    
 }

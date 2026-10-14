@@ -34,6 +34,16 @@ public class GameplayScreen : Screen
     private const int AimDotCount = 8;
     private const float AimDotSpacing = 6f;
 
+    // Vida que recupera un botiquín.
+    // Health restored by a medkit.
+    private const int MedkitHealAmount = 40;
+
+    // Objetos en el mapa al empezar y probabilidad de suministros por turno.
+    // Items on the map at the start and chance of supply drops per turn.
+    private const int StartingMedkits = 2;
+    private const int StartingCrates = 2;
+    private const double SupplyDropChance = 0.35;
+
     // Opciones del menú de pausa.
     // Pause menu options.
     private readonly string[] _pauseOptions = { "Continuar", "Rendirse", "Salir al menú" };
@@ -44,13 +54,16 @@ public class GameplayScreen : Screen
 
     private readonly Random _random = new();
     private readonly List<Penguin> _penguins = new();
+    private readonly List<Item> _items = new();
     private readonly List<Explosion> _explosions = new();
+    private readonly List<FloatingText> _floatingTexts = new();
     private readonly Wind _wind = new();
+    private Dictionary<Team, TeamInventory> _inventories;
     private Terrain _terrain;
     private TurnManager _turns;
 
-    // Proyectil en vuelo (solo puede haber uno a la vez).
-    // Projectile in flight (there can only be one at a time).
+    // Proyectil en juego (solo puede haber uno a la vez).
+    // Projectile in play (there can only be one at a time).
     private Projectile _projectile;
 
     // Estado de la carga del disparo.
@@ -73,24 +86,41 @@ public class GameplayScreen : Screen
         StartNewMatch();
     }
 
-    // Crea el mapa, coloca a los equipos y empieza el primer turno.
-    // Creates the map, places the teams and starts the first turn.
+    // Crea el mapa, coloca equipos y objetos, y empieza el primer turno.
+    // Creates the map, places teams and items, and starts the first turn.
     private void StartNewMatch()
     {
         _terrain?.Dispose();
         _terrain = new Terrain(Game.GraphicsDevice, Game1.ScreenWidth, Game1.ScreenHeight, Environment.TickCount);
 
         _penguins.Clear();
+        _items.Clear();
         _explosions.Clear();
+        _floatingTexts.Clear();
         _projectile = null;
         _isCharging = false;
         _power = 0f;
         _wind.Randomize(_random);
 
+        // Un inventario por equipo.
+        // One inventory per team.
+        _inventories = new Dictionary<Team, TeamInventory>
+        {
+            [Team.Heroes] = new TeamInventory(Team.Heroes),
+            [Team.Aliens] = new TeamInventory(Team.Aliens)
+        };
+
         // Terrestres a la izquierda, alienígenas a la derecha (el centro es el valle de la nave).
         // Earth penguins on the left, aliens on the right (the center is the ship valley).
         SpawnTeam(Team.Heroes, 0.08f);
         SpawnTeam(Team.Aliens, 0.72f);
+
+        // Objetos repartidos por el mapa.
+        // Items spread across the map.
+        for (int i = 0; i < StartingMedkits; i++)
+            SpawnItemOnGround(ItemType.Medkit);
+        for (int i = 0; i < StartingCrates; i++)
+            SpawnItemOnGround(ItemType.AmmoCrate);
 
         // El equipo que empieza se elige al azar.
         // The starting team is chosen at random.
@@ -108,16 +138,47 @@ public class GameplayScreen : Screen
         {
             float fraction = startFraction + i * 0.09f + (float)_random.NextDouble() * 0.03f;
             int x = (int)(fraction * Game1.ScreenWidth);
-            _penguins.Add(new Penguin(kinds[i], team, x, GetSpawnY(x)));
+            _penguins.Add(new Penguin(kinds[i], team, x, GetSurfaceUnder(x, Penguin.Width)));
         }
     }
 
-    // Altura donde aparece un pingüino: el punto más alto del terreno bajo todo su cuerpo.
-    // Height where a penguin spawns: the highest terrain point under its whole body.
-    private int GetSpawnY(int x)
+    // Coloca un objeto sobre el terreno, lejos de los pingüinos.
+    // Places an item on the terrain, away from the penguins.
+    private void SpawnItemOnGround(ItemType type)
     {
-        int left = x - Penguin.Width / 2;
-        return Enumerable.Range(left, Penguin.Width).Min(column => _terrain.GetSurfaceY(column));
+        int x = 0;
+
+        // Intentar varias posiciones hasta encontrar una lejos de todos los pingüinos.
+        // Try several positions until finding one away from all penguins.
+        for (int attempt = 0; attempt < 20; attempt++)
+        {
+            x = _random.Next(40, Game1.ScreenWidth - 40);
+            if (_penguins.All(p => Math.Abs(p.X - x) > 40))
+                break;
+        }
+
+        _items.Add(new Item(type, x, GetSurfaceUnder(x, Item.Size)));
+    }
+
+    // Lanza un objeto desde el cielo en una posición aleatoria.
+    // Drops an item from the sky at a random position.
+    private void TrySupplyDrop()
+    {
+        if (_random.NextDouble() >= SupplyDropChance)
+            return;
+
+        ItemType type = _random.Next(2) == 0 ? ItemType.Medkit : ItemType.AmmoCrate;
+        int x = _random.Next(40, Game1.ScreenWidth - 40);
+        _items.Add(new Item(type, x, Item.Size));
+        AddFloatingText("¡Suministros!", new Vector2(x, 110), Color.Gold);
+    }
+
+    // Punto más alto del terreno bajo un objeto de cierto ancho.
+    // Highest terrain point under an object of a given width.
+    private int GetSurfaceUnder(int x, int width)
+    {
+        int left = x - width / 2;
+        return Enumerable.Range(left, width).Min(column => _terrain.GetSurfaceY(column));
     }
 
     public override void Update(GameTime gameTime)
@@ -146,13 +207,25 @@ public class GameplayScreen : Screen
         }
 
         Penguin current = _turns.CurrentPenguin;
+        TeamInventory inventory = _inventories[current.Team];
         bool isPlaying = _turns.Phase == TurnPhase.Playing && _projectile == null;
-        bool canAct = CanAct(current);
 
-        // P pasa el turno sin disparar.
-        // P passes the turn without firing.
+        // Elegir arma, usar botiquín o pasar turno (solo sin estar cargando un disparo).
+        // Choose weapon, use medkit or pass the turn (only while not charging a shot).
+        if (CanAct(current) && !_isCharging)
+        {
+            HandleWeaponSelection(inventory);
+
+            if (InputManager.WasKeyPressed(Keys.H))
+                TryUseMedkit(current, inventory);
+        }
+
         if (isPlaying && !_isCharging && InputManager.WasKeyPressed(Keys.P))
             _turns.EndAction();
+
+        // Recalcular: usar un botiquín o pasar turno termina la acción.
+        // Recalculate: using a medkit or passing the turn ends the action.
+        bool canAct = CanAct(current);
 
         // Movimiento con A y D, salto con Espacio; solo en la fase de juego y sin cargar.
         // Movement with A and D, jump with Space; only in the playing phase and while not charging.
@@ -170,7 +243,7 @@ public class GameplayScreen : Screen
         if (moveDirection == 0 && canAct)
             current.FaceTowards(InputManager.MousePosition.X);
 
-        HandleAimAndFire(dt, current, canAct);
+        HandleAimAndFire(dt, current, inventory, canAct);
 
         // Actualizar a todos los pingüinos; solo el del turno recibe la entrada.
         // Update all penguins; only the one whose turn it is receives input.
@@ -180,13 +253,23 @@ public class GameplayScreen : Screen
             penguin.Update(dt, _terrain, isCurrent ? moveDirection : 0, isCurrent && jumpRequested);
         }
 
+        // Los objetos caen si no tienen suelo, y se recogen al tocarlos.
+        // Items fall if they have no ground, and are picked up on touch.
+        foreach (Item item in _items)
+            item.Update(dt, _terrain);
+        CollectItems();
+
         UpdateProjectile(dt);
 
-        // Actualizar los destellos y quitar los que terminaron.
-        // Update the flashes and remove the finished ones.
+        // Actualizar efectos y quitar los que terminaron.
+        // Update effects and remove the finished ones.
         foreach (Explosion explosion in _explosions)
             explosion.Update(dt);
         _explosions.RemoveAll(e => e.IsFinished);
+
+        foreach (FloatingText text in _floatingTexts)
+            text.Update(dt);
+        _floatingTexts.RemoveAll(t => t.IsFinished);
 
         _terrain.ApplyChanges();
 
@@ -197,8 +280,8 @@ public class GameplayScreen : Screen
             EndTurn();
     }
 
-    // Solo se puede actuar en la fase de juego, en el suelo y sin proyectiles en el aire.
-    // Actions are only allowed in the playing phase, on the ground and with no projectile in the air.
+    // Solo se puede actuar en la fase de juego, en el suelo y sin proyectiles en juego.
+    // Actions are only allowed in the playing phase, on the ground and with no projectile in play.
     private bool CanAct(Penguin penguin) =>
         _turns.Phase == TurnPhase.Playing &&
         _projectile == null &&
@@ -211,6 +294,70 @@ public class GameplayScreen : Screen
         _projectile == null &&
         _explosions.Count == 0 &&
         _penguins.All(p => !p.IsAlive || p.IsGrounded);
+
+    // Teclas 1, 2 y 3 eligen arma; la rueda del ratón pasa a la siguiente o anterior.
+    // Keys 1, 2 and 3 choose a weapon; the mouse wheel moves to the next or previous one.
+    private static void HandleWeaponSelection(TeamInventory inventory)
+    {
+        if (InputManager.WasKeyPressed(Keys.D1)) inventory.Select(0);
+        if (InputManager.WasKeyPressed(Keys.D2)) inventory.Select(1);
+        if (InputManager.WasKeyPressed(Keys.D3)) inventory.Select(2);
+
+        int scroll = InputManager.ScrollDelta;
+        if (scroll > 0)
+            inventory.SelectNext(-1);
+        else if (scroll < 0)
+            inventory.SelectNext(1);
+    }
+
+    // Usar un botiquín cura al pingüino del turno y termina el turno.
+    // Using a medkit heals the current penguin and ends the turn.
+    private void TryUseMedkit(Penguin current, TeamInventory inventory)
+    {
+        if (inventory.Medkits <= 0 || current.Health >= Penguin.MaxHealth)
+            return;
+
+        inventory.UseMedkit();
+        current.Heal(MedkitHealAmount);
+        AddFloatingText($"+{MedkitHealAmount} HP", current.Center - new Vector2(0f, 45f), Color.LimeGreen);
+        _turns.EndAction();
+    }
+
+    // Cualquier pingüino que toque un objeto lo recoge para su equipo.
+    // Any penguin touching an item picks it up for its team.
+    private void CollectItems()
+    {
+        foreach (Item item in _items)
+        {
+            if (item.IsRemoved)
+                continue;
+
+            Penguin collector = _penguins.FirstOrDefault(p => p.IsAlive && p.Bounds.Intersects(item.Bounds));
+            if (collector == null)
+                continue;
+
+            TeamInventory inventory = _inventories[collector.Team];
+            Vector2 textPosition = item.Center - new Vector2(0f, 30f);
+
+            if (item.Type == ItemType.Medkit)
+            {
+                inventory.AddMedkit();
+                AddFloatingText("+1 Botiquín", textPosition, Color.White);
+            }
+            else
+            {
+                Weapon weapon = inventory.AddRandomAmmo(_random);
+                AddFloatingText($"+{TeamInventory.CrateAmmoAmount} {weapon.Name}", textPosition, Color.Gold);
+            }
+
+            item.Remove();
+        }
+
+        _items.RemoveAll(i => i.IsRemoved);
+    }
+
+    private void AddFloatingText(string text, Vector2 position, Color color) =>
+        _floatingTexts.Add(new FloatingText(text, position, color));
 
     // Al terminar un turno: revisar si alguien ganó; si no, cambiar el viento y seguir.
     // When a turn ends: check whether someone won; otherwise change the wind and continue.
@@ -232,6 +379,7 @@ public class GameplayScreen : Screen
 
         _wind.Randomize(_random);
         _turns.BeginNextTurn();
+        TrySupplyDrop();
     }
 
     private void GoToGameOver(Team? winner, string reason)
@@ -275,14 +423,23 @@ public class GameplayScreen : Screen
         }
     }
 
-    // Mantener el clic carga la potencia; soltarlo (o llegar al máximo) dispara.
-    // Holding the click charges power; releasing it (or reaching the maximum) fires.
-    private void HandleAimAndFire(float dt, Penguin current, bool canAct)
+    // Armas con carga: mantener el clic carga y soltar dispara. Armas sin carga: el clic dispara al instante.
+    // Charged weapons: holding the click charges and releasing fires. Uncharged weapons: the click fires instantly.
+    private void HandleAimAndFire(float dt, Penguin current, TeamInventory inventory, bool canAct)
     {
         if (!canAct)
         {
             _isCharging = false;
             _power = 0f;
+            return;
+        }
+
+        Weapon weapon = inventory.SelectedWeapon;
+
+        if (!weapon.UsesCharge)
+        {
+            if (InputManager.WasLeftClicked)
+                Fire(current, inventory);
             return;
         }
 
@@ -302,26 +459,31 @@ public class GameplayScreen : Screen
             // Al llegar al máximo dispara solo.
             // When it reaches the maximum, it fires automatically.
             if (_power >= 1f)
-                Fire(current);
+                Fire(current, inventory);
         }
         else
         {
             // Se soltó el botón: disparar con la potencia acumulada.
             // The button was released: fire with the accumulated power.
-            Fire(current);
+            Fire(current, inventory);
         }
     }
 
-    // Crea el proyectil hacia el ratón y termina la acción del turno.
-    // Creates the projectile towards the mouse and ends the turn's action.
-    private void Fire(Penguin shooter)
+    // Crea el proyectil del arma seleccionada, gasta munición y termina la acción del turno.
+    // Creates the selected weapon's projectile, spends ammo and ends the turn's action.
+    private void Fire(Penguin shooter, TeamInventory inventory)
     {
-        Weapon weapon = Weapon.ForTeam(shooter.Team);
+        Weapon weapon = inventory.SelectedWeapon;
         Vector2 direction = GetAimDirection(shooter);
         Vector2 spawnPosition = shooter.GunOrigin + direction * MuzzleDistance;
-        Vector2 velocity = direction * weapon.MaxLaunchSpeed * Math.Max(_power, MinPower);
+
+        // Las armas sin carga siempre disparan a potencia máxima.
+        // Uncharged weapons always fire at full power.
+        float power = weapon.UsesCharge ? Math.Max(_power, MinPower) : 1f;
+        Vector2 velocity = direction * weapon.MaxLaunchSpeed * power;
 
         _projectile = new Projectile(weapon, spawnPosition, velocity, shooter);
+        inventory.ConsumeAmmo(weapon);
         _isCharging = false;
         _power = 0f;
 
@@ -345,8 +507,8 @@ public class GameplayScreen : Screen
         return direction;
     }
 
-    // Mueve el proyectil y, si choca, aplica la explosión.
-    // Moves the projectile and, if it hits something, applies the explosion.
+    // Mueve el proyectil y, si explota, aplica la explosión.
+    // Moves the projectile and, if it explodes, applies the explosion.
     private void UpdateProjectile(float dt)
     {
         if (_projectile == null)
@@ -363,14 +525,22 @@ public class GameplayScreen : Screen
         _projectile = null;
     }
 
-    // Destruye terreno, daña a los pingüinos cercanos y crea el destello.
-    // Destroys terrain, damages nearby penguins and creates the flash.
+    // Destruye terreno y objetos, daña a los pingüinos cercanos y crea el destello.
+    // Destroys terrain and items, damages nearby penguins and creates the flash.
     private void TriggerExplosion(Vector2 position, Weapon weapon)
     {
         _terrain.Destroy(position, weapon.ExplosionRadius);
 
         foreach (Penguin penguin in _penguins)
-            penguin.ApplyExplosion(position, weapon.ExplosionRadius, weapon.MaxDamage);
+            penguin.ApplyExplosion(position, weapon.ExplosionRadius, weapon.MaxDamage, weapon.KnockbackScale);
+
+        // Los objetos dentro del radio se destruyen.
+        // Items inside the radius are destroyed.
+        foreach (Item item in _items)
+        {
+            if (Vector2.Distance(item.Center, position) < weapon.ExplosionRadius)
+                item.Remove();
+        }
 
         _explosions.Add(new Explosion(position, weapon.ExplosionRadius));
     }
@@ -380,6 +550,9 @@ public class GameplayScreen : Screen
         DrawSky(sb);
         _terrain.Draw(sb);
 
+        foreach (Item item in _items)
+            item.Draw(sb, Game.Pixel);
+
         Penguin current = _turns.CurrentPenguin;
 
         // La flecha dorada marca al pingüino del turno.
@@ -387,16 +560,20 @@ public class GameplayScreen : Screen
         foreach (Penguin penguin in _penguins)
             penguin.Draw(sb, Game.Pixel, Game.Font, penguin == current);
 
-        _projectile?.Draw(sb, Game.Circle);
+        _projectile?.Draw(sb, Game.Circle, Game.Font);
 
         foreach (Explosion explosion in _explosions)
             explosion.Draw(sb, Game.Circle);
+
+        foreach (FloatingText text in _floatingTexts)
+            text.Draw(sb, Game.Font);
 
         if (CanAct(current))
             DrawAim(sb, current);
 
         DrawHud(sb, current);
         DrawTimer(sb);
+        DrawWeaponBar(sb, current);
         _wind.Draw(sb, Game.Pixel, Game.Font, Game1.ScreenWidth);
 
         if (_turns.Phase == TurnPhase.Starting)
@@ -437,12 +614,58 @@ public class GameplayScreen : Screen
     // Turn information and on-screen controls.
     private void DrawHud(SpriteBatch sb, Penguin current)
     {
-        Weapon weapon = Weapon.ForTeam(current.Team);
+        Weapon weapon = _inventories[current.Team].SelectedWeapon;
         string power = _isCharging ? $"  |  Potencia: {(int)(_power * 100)}%" : "";
 
         DrawCenteredText(sb, $"Turno {_turns.TurnNumber}: {current.Name} ({current.Health} HP)  |  Arma: {weapon.Name}{power}", 20, Color.White, 0.75f);
-        DrawCenteredText(sb, "A/D: caminar  |  Espacio: saltar  |  Ratón: apuntar  |  Mantener clic: cargar, soltar: disparar", 56, Color.LightGray, 0.5f);
-        DrawCenteredText(sb, "P: pasar turno  |  Esc: pausa", 78, Color.LightGray, 0.5f);
+        DrawCenteredText(sb, "A/D: caminar  |  Espacio: saltar  |  Ratón: apuntar  |  Clic: disparar (mantener para cargar)", 56, Color.LightGray, 0.5f);
+        DrawCenteredText(sb, "1-3 o rueda: arma  |  H: botiquín  |  P: pasar turno  |  Esc: pausa", 78, Color.LightGray, 0.5f);
+    }
+
+    // Barra de armas del equipo del turno y botiquines disponibles.
+    // Weapon bar of the current team and available medkits.
+    private void DrawWeaponBar(SpriteBatch sb, Penguin current)
+    {
+        TeamInventory inventory = _inventories[current.Team];
+        const int slotWidth = 170;
+        const int slotHeight = 44;
+        const int gap = 10;
+
+        int totalWidth = inventory.Weapons.Count * slotWidth + (inventory.Weapons.Count - 1) * gap;
+        int startX = (Game1.ScreenWidth - totalWidth) / 2;
+        int y = Game1.ScreenHeight - slotHeight - 12;
+
+        for (int i = 0; i < inventory.Weapons.Count; i++)
+        {
+            Weapon weapon = inventory.Weapons[i];
+            int x = startX + i * (slotWidth + gap);
+            bool isSelected = i == inventory.SelectedIndex;
+            bool hasAmmo = inventory.HasAmmo(weapon);
+
+            // Borde dorado para el arma seleccionada.
+            // Golden border for the selected weapon.
+            DrawRect(sb, new Rectangle(x - 2, y - 2, slotWidth + 4, slotHeight + 4), isSelected ? Color.Gold : Color.Gray * 0.6f);
+            DrawRect(sb, new Rectangle(x, y, slotWidth, slotHeight), Color.Black * 0.75f);
+
+            // Nombre y munición; en gris si no queda munición.
+            // Name and ammo; gray if there is no ammo left.
+            Color textColor = hasAmmo ? Color.White : Color.DimGray;
+            string ammo = weapon.HasUnlimitedAmmo ? "Munición: ilimitada" : $"Munición: {inventory.GetAmmo(weapon)}";
+
+            sb.DrawString(Game.Font, $"{i + 1}. {weapon.Name}", new Vector2(x + 8, y + 4), textColor,
+                0f, Vector2.Zero, 0.5f, SpriteEffects.None, 0f);
+            sb.DrawString(Game.Font, ammo, new Vector2(x + 8, y + 24), Color.LightGray * (hasAmmo ? 1f : 0.5f),
+                0f, Vector2.Zero, 0.42f, SpriteEffects.None, 0f);
+        }
+
+        // Botiquines del equipo, a la derecha.
+        // Team medkits, on the right.
+        int medkitX = Game1.ScreenWidth - 190;
+        DrawRect(sb, new Rectangle(medkitX, y, 160, slotHeight), Color.Black * 0.75f);
+        sb.DrawString(Game.Font, $"Botiquines: {inventory.Medkits}", new Vector2(medkitX + 8, y + 4), Color.White,
+            0f, Vector2.Zero, 0.5f, SpriteEffects.None, 0f);
+        sb.DrawString(Game.Font, $"H: usar (+{MedkitHealAmount} HP)", new Vector2(medkitX + 8, y + 24), Color.LightGray,
+            0f, Vector2.Zero, 0.42f, SpriteEffects.None, 0f);
     }
 
     // Tiempo restante del turno, arriba a la izquierda; en rojo los últimos 10 segundos.
