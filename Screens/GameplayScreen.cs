@@ -49,6 +49,11 @@ public class GameplayScreen : Screen
     // Duration of the AI's speech bubble.
     private const float SpeechDuration = 3.5f;
 
+    // Cantidad de copos de nieve y altura de la superficie del mar.
+    // Number of snowflakes and height of the sea surface.
+    private const int SnowflakeCount = 160;
+    private const int WaterHeight = 22;
+
     // Opciones del menú de pausa.
     // Pause menu options.
     private readonly string[] _pauseOptions = { "Continuar", "Rendirse", "Salir al menú" };
@@ -65,9 +70,12 @@ public class GameplayScreen : Screen
     private readonly List<Explosion> _explosions = new();
     private readonly List<FloatingText> _floatingTexts = new();
     private readonly Wind _wind = new();
+    private readonly Water _water = new(Game1.ScreenHeight - WaterHeight);
     private readonly AiController _ai;
     private Dictionary<Team, TeamInventory> _inventories;
     private Terrain _terrain;
+    private Background _background;
+    private Snowfall _snowfall;
     private TurnManager _turns;
 
     // Número del turno en que la IA empezó a planear (para hacerlo una sola vez por turno).
@@ -115,12 +123,18 @@ public class GameplayScreen : Screen
         _ai.WarmUp();
     }
 
-    // Crea el mapa, coloca equipos y objetos, y empieza el primer turno.
-    // Creates the map, places teams and items, and starts the first turn.
+    // Crea el escenario, coloca equipos y objetos, y empieza el primer turno.
+    // Creates the scenery, places teams and items, and starts the first turn.
     private void StartNewMatch()
     {
-        _terrain?.Dispose();
-        _terrain = new Terrain(Game.GraphicsDevice, Game1.ScreenWidth, Game1.ScreenHeight, Environment.TickCount);
+        DisposeResources();
+
+        // Una semilla por partida para el terreno y el fondo.
+        // One seed per match for the terrain and the background.
+        int seed = Environment.TickCount;
+        _terrain = new Terrain(Game.GraphicsDevice, Game1.ScreenWidth, Game1.ScreenHeight, seed);
+        _background = new Background(Game.GraphicsDevice, Game1.ScreenWidth, Game1.ScreenHeight, seed);
+        _snowfall = new Snowfall(SnowflakeCount, Game1.ScreenWidth, Game1.ScreenHeight, _random);
 
         _penguins.Clear();
         _items.Clear();
@@ -159,6 +173,16 @@ public class GameplayScreen : Screen
         // The starting team is chosen at random.
         Team firstTeam = _random.Next(2) == 0 ? Team.Heroes : Team.Aliens;
         _turns = new TurnManager(_penguins, firstTeam);
+    }
+
+    // Libera las texturas generadas (terreno y fondo) de la memoria de video.
+    // Releases the generated textures (terrain and background) from video memory.
+    private void DisposeResources()
+    {
+        _terrain?.Dispose();
+        _background?.Dispose();
+        _terrain = null;
+        _background = null;
     }
 
     // Coloca a los miembros de un equipo separados entre sí, con algo de variación.
@@ -279,6 +303,11 @@ public class GameplayScreen : Screen
         // Descontar el tiempo del globo de diálogo.
         // Count down the speech bubble time.
         _speechTimer = Math.Max(0f, _speechTimer - dt);
+
+        // Animar el escenario: la nieve sigue al viento del turno y el mar se mueve.
+        // Animate the scenery: the snow follows the turn's wind and the sea moves.
+        _snowfall.Update(dt, _wind.Strength);
+        _water.Update(dt);
 
         _terrain.ApplyChanges();
 
@@ -505,7 +534,7 @@ public class GameplayScreen : Screen
 
     private void GoToGameOver(Team? winner, string reason)
     {
-        _terrain.Dispose();
+        DisposeResources();
         Game.Screens.ChangeScreen(new GameOverScreen(Game, _playerTeam, _difficulty, winner, reason));
     }
 
@@ -538,7 +567,7 @@ public class GameplayScreen : Screen
             case 2:
                 // Salir al menú principal.
                 // Exit to the main menu.
-                _terrain.Dispose();
+                DisposeResources();
                 Game.Screens.ChangeScreen(new MenuScreen(Game));
                 break;
         }
@@ -672,8 +701,11 @@ public class GameplayScreen : Screen
 
     public override void Draw(SpriteBatch sb)
     {
-        DrawSky(sb);
+        // Escenario: fondo, terreno con la nave y mar helado delante del terreno.
+        // Scenery: background, terrain with the ship and icy sea in front of the terrain.
+        _background.Draw(sb);
         _terrain.Draw(sb);
+        _water.Draw(sb, Game.Pixel, Game1.ScreenWidth, Game1.ScreenHeight);
 
         foreach (Item item in _items)
             item.Draw(sb, Game.Pixel);
@@ -690,6 +722,10 @@ public class GameplayScreen : Screen
 
         foreach (Explosion explosion in _explosions)
             explosion.Draw(sb, Game.Circle);
+
+        // La nieve va delante del mundo pero detrás de la interfaz.
+        // The snow goes in front of the world but behind the interface.
+        _snowfall.Draw(sb, Game.Pixel);
 
         foreach (FloatingText text in _floatingTexts)
             text.Draw(sb, Game.Font);
@@ -904,21 +940,5 @@ public class GameplayScreen : Screen
     {
         Vector2 size = Game.Font.MeasureString(text) * scale;
         sb.DrawString(Game.Font, text, center - size / 2f, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-    }
-
-    // Dibuja un cielo con degradado vertical, de noche arriba a más claro abajo.
-    // Draws a sky with a vertical gradient, from night at the top to lighter at the bottom.
-    private void DrawSky(SpriteBatch sb)
-    {
-        const int bands = 72;
-        int bandHeight = Game1.ScreenHeight / bands;
-        var top = new Color(10, 14, 30);
-        var bottom = new Color(60, 85, 125);
-
-        for (int i = 0; i < bands; i++)
-        {
-            Color color = Color.Lerp(top, bottom, i / (float)(bands - 1));
-            DrawRect(sb, new Rectangle(0, i * bandHeight, Game1.ScreenWidth, bandHeight), color);
-        }
     }
 }

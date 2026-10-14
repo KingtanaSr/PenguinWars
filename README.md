@@ -4,7 +4,7 @@ A turn-based 2D artillery game inspired by **Worms**, built from scratch in **C#
 
 Two teams of penguins face off on a snowy battlefield: the **Earth Penguins** defending their home, and the **Alien Penguins** whose spaceship crash-landed on the ice. The player picks a side, and a **hybrid AI** (a local LLM strategist plus a classic simulation-based planner) controls the opposing team.
 
-> **Status:** Work in progress (Phase 8.5 of 9 completed). This is a personal learning project focused on C#, game architecture, game physics and game AI.
+> **Status:** Work in progress (Phase 9 in progress: 9.1 completed). This is a personal learning project focused on C#, game architecture, game physics and game AI.
 
 ---
 
@@ -44,7 +44,7 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 
 ## Map
 
-**Arctic Wreck:** a frozen landscape with the remains of the crashed alien spaceship in its central valley.
+**Arctic Wreck:** a frozen landscape under the northern lights, with the remains of the crashed alien spaceship in its central valley. The wreckage is part of the terrain itself: penguins can stand on it, and explosions can blow it apart.
 
 ## Gameplay
 
@@ -52,9 +52,9 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 - **Turn-based:** on each turn, one member of the active team can move and act, with a **45-second** time limit.
 - A turn ends when the active penguin **fires a weapon, uses a medkit, passes or runs out of time**.
 - Each team **rotates through its living members** every turn, and the starting team is chosen at random.
-- **Destructible terrain:** explosions carve the snowy landscape.
-- **Projectile physics:** shots are affected by angle, power, gravity and wind, which **changes every turn**.
-- **Health bars** for every penguin, plus fall damage and drowning in icy water.
+- **Destructible terrain:** explosions carve the snowy landscape and the spaceship wreckage.
+- **Projectile physics:** shots are affected by angle, power, gravity and wind, which **changes every turn**. Falling snow drifts with the wind, giving a visual hint for aiming.
+- **Health bars** for every penguin, plus fall damage and drowning in the icy sea.
 - **Items** spawn on the map, can be picked up by touching them, and sometimes fall from the sky as **supply drops**.
 - **AI penguins talk:** with the LLM strategist enabled, they taunt you in character through speech bubbles.
 - The match ends when **all members of a team are eliminated** or the player **surrenders**. If both teams are eliminated at the same time, it is a **draw**.
@@ -72,7 +72,15 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 | 7 | Items: medkits, ammo crates and weapon sets | ✅ Done |
 | 8 | Classic AI opponent (shot simulation) | ✅ Done |
 | 8.5 | LLM strategist layer with a local model (Ollama) | ✅ Done |
-| 9 | Art, sound, map wreckage and polish | 🚧 Next |
+| 9 | Art, sound, map wreckage and polish | 🚧 In progress |
+
+| Sub-phase | Description | Status |
+|---|---|---|
+| 9.1 | Scenery: spaceship wreckage, background, snowfall and sea | ✅ Done |
+| 9.2 | Effects: explosion particles, smoke, projectile trails and screen shake | 🚧 Next |
+| 9.3 | Procedurally generated sound effects and volume control | ⏳ Planned |
+| 9.4 | Pixel art sprites for penguins, weapons and items | ⏳ Planned |
+| 9.5 | Final polish: title screen, animated menu and settings | ⏳ Planned |
 
 ### ✅ Phase 1: Project setup
 - MonoGame DesktopGL project created with the .NET CLI.
@@ -142,20 +150,27 @@ Each team has **3 members**. Earth penguins use earthly weapons, while alien pen
 
 ### ✅ Phase 8.5: LLM strategist (hybrid AI)
 - A local language model running on **Ollama** (default: `qwen2.5:1.5b`) acts as the **strategic "brain"** of the AI team.
-- Each AI turn, the game builds a **text snapshot** of the match (health, distances, heights, wind, weapons, ammo and medkits) and a list of **valid options computed by the game** (attack a specific enemy or heal).
+- Each AI turn, the game builds a **text snapshot** of the match and a list of **valid options computed by the game** (attack a specific enemy or heal).
 - The model answers in **constrained JSON** (`{"choice": ..., "taunt": ...}`) using Ollama's JSON mode.
 - **Validation and graceful degradation:** only options that exist in the list are accepted; on timeout (12 s), invalid output or if Ollama is not running, the classic AI decides alone.
 - The classic planner remains the **"hands"**: it searches for the best shot **focused on the target chosen by the LLM**.
-- **Asynchronous requests** (`async`/`await` with `Task`) polled from the game loop, so the game stays responsive; the request only reads an immutable text snapshot, never the game objects (thread safety).
-- **Provider-agnostic design:** the AI depends on an `IStrategyAdvisor` interface, so Ollama could be swapped for a cloud API without touching the AI logic.
+- **Asynchronous requests** (`async`/`await` with `Task`) polled from the game loop; the request only reads an immutable text snapshot, never the game objects (thread safety).
+- **Provider-agnostic design** through the `IStrategyAdvisor` interface.
 - **Model warm-up** at the start of each match, and `keep_alive` to keep the model loaded between turns.
 - **In-character taunts** shown in speech bubbles, sanitized to the characters supported by the game font.
-- HUD shows who made the decision (LLM or classic AI) and the chosen goal, and the strategist can be toggled in the main menu.
 
-### 🚧 Phase 9: Art, sound and polish (next)
-- Sprites for penguins, weapons, items and the spaceship wreckage based on the concept art.
-- Sound effects and music.
-- Visual polish and final adjustments.
+### 🚧 Phase 9: Art, sound and polish (in progress)
+
+#### ✅ 9.1: Scenery
+- **Spaceship wreckage painted into the terrain mask:** hull with panels, green neon stripe, purple windows, glass cockpit, rear fin, broken wing and scattered debris. Because it is part of the terrain, it is solid, walkable and destructible with no extra collision code.
+- **Rotated shape rasterizer:** each pixel near a shape is transformed into the shape's local coordinates (inverse rotation) and a "shader" function decides its color, the same principle GPU shaders use.
+- **Procedural background** generated once per match into a texture: night sky gradient, northern lights with additive blending, stars and two mountain layers with snowy peaks.
+- **Snowfall particle system** (structs updated in place with `ref`) that drifts with the current wind, doubling as a visual aiming hint.
+- **Animated icy sea** with layered sine waves and a foam line.
+- Terrain and background share the same seed per match, and their textures are released together when leaving the match.
+
+#### 🚧 9.2: Effects (next)
+- Explosion debris particles (snow, ice and metal), smoke, projectile trails and screen shake.
 
 ## Game AI
 
@@ -187,13 +202,15 @@ The game is built around MonoGame's **game loop** (`Update` for logic, `Draw` fo
 - **`ShotPlanner`:** frame-budgeted search that simulates and scores candidate shots, with an optional priority target.
 - **`IStrategyAdvisor` / `OllamaStrategyAdvisor`:** provider-agnostic interface and its Ollama implementation (HTTP + JSON with `HttpClient` and `System.Text.Json`).
 - **`StrategyContext`:** immutable text snapshot of the match and the list of valid options sent to the LLM.
-- **`Terrain`:** pixel mask for collisions and destruction, rendered as a texture that is only re-uploaded when it changes.
+- **`Terrain`:** pixel mask for collisions and destruction, including the spaceship wreckage, rendered as a texture that is only re-uploaded when it changes.
+- **`Background`:** procedural sky, northern lights, stars and mountains, generated once per match into a texture.
+- **`Snowfall`** and **`Water`:** animated scenery (wind-driven snow particles and an icy sea).
 - **`Penguin`:** encapsulates movement, physics, health and rendering of each character.
 - **`Item`:** medkits and ammo crates with simple gravity, picked up on contact.
 - **`Weapon`:** immutable weapon definitions (data only), separated from the behavior of `Projectile`.
 - **`Projectile`:** simulates the flight of a shot, bounces for timed weapons and detects hits. The same class is used for real shots and for the AI's simulations.
 - **`Explosion`** and **`FloatingText`:** short-lived visual effects that remove themselves when finished.
-- **`Wind`:** random horizontal acceleration applied to projectiles.
+- **`Wind`:** random horizontal acceleration applied to projectiles and snowflakes.
 - **`GameSettings`:** global settings such as enabling the LLM strategist.
 - **Content Pipeline:** fonts, sprites and sounds are processed at build time through `Content.mgcb`.
 
@@ -206,7 +223,7 @@ PenguinWars/
 ├── Entities/       # Penguins, their profiles and map items
 ├── Gameplay/       # Match rules (turn system, team inventories)
 ├── Screens/        # Game screens (menu, gameplay, game over)
-├── World/          # Destructible terrain and wind
+├── World/          # Terrain and wreckage, background, snowfall, sea and wind
 ├── docs/           # Concept art and documentation images
 ├── Game1.cs        # Main game class and game loop
 └── Program.cs      # Entry point
